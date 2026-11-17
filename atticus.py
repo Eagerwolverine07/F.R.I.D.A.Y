@@ -575,7 +575,7 @@ After failure, correction or a repeated ask, end [tip <exact words the user can 
 
 # F.R.I.D.A.Y voice mode (on by default): spoken asks become a back-and-forth, so replies are written for the ear
 VOICE_MODE = """
-Voice mode: replies are read aloud and the user answers by voice. Talk like a sharp, warm friend: natural spoken sentences, contractions; no Markdown, lists, links or emoji; say numbers and symbols as spoken. Answer first in 1-2 short sentences; a looked-up fact in one, like Siri, with no sources or sites. Long material: the gist, then offer more. No filler or praise. At most one short follow-up question, only if it helps. Tagged replies and drawings keep their rules."""
+Voice mode: replies are read aloud and the user answers by voice. Talk like a warm friend in natural spoken sentences; no Markdown, lists, links or emoji; say numbers and symbols as spoken. Answer first in 1-2 short sentences; a looked-up fact in one, like Siri, with no sources or sites. Long material: gist, then offer more. No filler or praise. At most one short follow-up question, only if it helps. Tagged replies and drawings keep their rules."""
 
 # Ask me when unsure (always on): a choices card in the box instead of a guess
 ASK_ME = f"""
@@ -4170,7 +4170,7 @@ def stop_workers(*_):
 
 
 AGENT_HANDOFF = '''
-Drafts/edits/pointing/guides, short/uncertain work stay here. Before work: hand off explicit delegation/background asks, long multi-source/many-step work, look-act loops to a goal or missing connectors. A recipient alone isn't delegation.
+Drafts/edits/pointing/guides, quick facts (weather, scores), short/uncertain work stay here. Before work: hand off explicit delegation/background asks, long multi-source/many-step work, look-act loops to a goal or missing connectors. A recipient alone isn't delegation.
 First lines, even after tools: [agent {"title":"2-4 words","brief":"task","context":"known details"}] per separate task. Include screen/doc/URL. Work window: app, page (tab words). Optional connectors; destination:"meeting" for call prep.
 Existing task only: [steer {"id":"Context ID","text":"short change"}]. If exactly one is live, use it; never ask which or start another. Otherwise show choices.
 Named agents in Context. Any language: first-only [agent-profile JSON], save/list/rename/delete/run; run now; unknown asks.
