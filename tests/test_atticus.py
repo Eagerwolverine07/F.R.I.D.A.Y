@@ -1957,6 +1957,20 @@ class WatchAndBudgetTests(unittest.TestCase):
         source = Path(atticus.__file__).read_text()
         self.assertIn("(hands_command(plain(task)) or quick_hint(plain(task)))", source)
 
+    def test_places_with_a_state_are_found(self):   # F.R.I.D.A.Y: Open-Meteo finds "Strongsville" but not "Strongsville Ohio"
+        towns = {'strongsville': [{'name': 'Strongsville', 'admin1': 'Ohio', 'country': 'United States', 'country_code': 'US'}],
+                 'paris': [{'name': 'Paris', 'admin1': 'Île-de-France', 'country': 'France', 'country_code': 'FR'},
+                           {'name': 'Paris', 'admin1': 'Texas', 'country': 'United States', 'country_code': 'US'}]}
+        def fake(url, timeout=10):
+            name = atticus.urllib.parse.unquote(url.split('name=')[1]).lower()
+            return json.dumps({'results': towns[name]} if name in towns else {})
+        with patch.object(atticus, 'get', side_effect=fake):
+            self.assertEqual(atticus.geocode('strongsville ohio')['admin1'], 'Ohio')
+            self.assertEqual(atticus.geocode('Strongsville, OH')['admin1'], 'Ohio')
+            self.assertEqual(atticus.geocode('paris texas')['admin1'], 'Texas')
+            self.assertIsNone(atticus.geocode('nowhereville ohio'))
+        self.assertEqual(atticus.weather_place(atticus.plain("What's the weather going to be tomorrow in Strongsville, Ohio?")), 'strongsville ohio')
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:

@@ -2469,13 +2469,37 @@ def weather(q):
 
 # ---- F.R.I.D.A.Y quick answers: Siri-style one-line replies with no AI. Each returns None when the ask isn't clearly its kind. ----
 
+US_STATES = {'al': 'alabama', 'ak': 'alaska', 'az': 'arizona', 'ar': 'arkansas', 'ca': 'california', 'co': 'colorado', 'ct': 'connecticut', 'de': 'delaware',
+             'fl': 'florida', 'ga': 'georgia', 'hi': 'hawaii', 'id': 'idaho', 'il': 'illinois', 'in': 'indiana', 'ia': 'iowa', 'ks': 'kansas', 'ky': 'kentucky',
+             'la': 'louisiana', 'me': 'maine', 'md': 'maryland', 'ma': 'massachusetts', 'mi': 'michigan', 'mn': 'minnesota', 'ms': 'mississippi', 'mo': 'missouri',
+             'mt': 'montana', 'ne': 'nebraska', 'nv': 'nevada', 'nh': 'new hampshire', 'nj': 'new jersey', 'nm': 'new mexico', 'ny': 'new york',
+             'nc': 'north carolina', 'nd': 'north dakota', 'oh': 'ohio', 'ok': 'oklahoma', 'or': 'oregon', 'pa': 'pennsylvania', 'ri': 'rhode island',
+             'sc': 'south carolina', 'sd': 'south dakota', 'tn': 'tennessee', 'tx': 'texas', 'ut': 'utah', 'vt': 'vermont', 'va': 'virginia', 'wa': 'washington',
+             'wv': 'west virginia', 'wi': 'wisconsin', 'wy': 'wyoming', 'dc': 'district of columbia'}
+
+
 def geocode(place):
-    """A place name -> Open-Meteo's best match {name, admin1, country_code, latitude, longitude, timezone}, or None."""
-    try:
-        found = json.loads(get('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + urllib.parse.quote(place), timeout=4)).get('results') or []
-    except (OSError, ValueError, AttributeError):
-        return None
-    return found[0] if found else None
+    """A place name -> Open-Meteo's best match {name, admin1, country_code, latitude, longitude, timezone}, or None.
+    Open-Meteo matches town names only ("Strongsville, Ohio" finds nothing), so a trailing state or country is split off and used to pick the match."""
+    words = place.replace(',', ' ').split()
+    fallback = None
+    for cut in range(len(words), 0, -1):
+        name = ' '.join(words[:cut])
+        if len(name) < 2: continue
+        try:
+            found = json.loads(get('https://geocoding-api.open-meteo.com/v1/search?count=10&name=' + urllib.parse.quote(name), timeout=4)).get('results') or []
+        except (OSError, ValueError, AttributeError):
+            return None
+        if not found: continue
+        rest = ' '.join(words[cut:]).lower()
+        rest = US_STATES.get(rest, rest)
+        need = [US_STATES.get(w, w) for w in rest.split() if w not in ('usa', 'us', 'america', 'city', 'the', 'in')] if rest not in US_STATES.values() else [rest]
+        us = any(w in ('usa', 'us', 'america') for w in rest.split())
+        for spot in found:
+            where = ' '.join(str(spot.get(k, '')) for k in ('admin1', 'admin2', 'country', 'country_code')).lower()
+            if all(w in where for w in need) and (not us or spot.get('country_code') == 'US'): return spot
+        fallback = fallback or found[0]   # "New York City": the longest name that found anything
+    return fallback
 
 
 def here():
