@@ -2617,7 +2617,26 @@ def start_timer(seconds, label, done):
     fast.cmds = []
 
 
+TIMER_FOLLOWUP = re.compile(r"(?:how (?:can|do) i (?:track|check|see|follow) (?:it|that|this)|how (?:much )?(?:long|longer|time)(?: is| do i have)?(?: left| remaining)?"
+                            r"|(?:how much |what's the )?time (?:is )?(?:left|remaining)|how much longer|is it (?:done|up) yet|when (?:will|does) it (?:go off|ring|end|be done))", re.I)
+
+
+def timer_status():
+    rows = sorted(timers(), key=lambda r: r['ends'])
+    if not rows: return 'There are no timers running.'
+    return ' '.join(f"Your {r['label']} has {span(r['ends'] - time.time())} left." for r in rows[:3])
+
+
+def timer_context():
+    """For the AI: F.R.I.D.A.Y's own timers, so it never sends the user to the Clock app."""
+    rows = sorted(timers(), key=lambda r: r['ends'])
+    if not rows: return ''
+    return (' F.R.I.D.A.Y timers (not in the Clock app): ' + '; '.join(f"{r['label']}, {span(r['ends'] - time.time())} left" for r in rows[:3]) +
+            '. They chime and speak when done; the user can say "how much time is left" or "cancel my timer".')
+
+
 def quick_timer(t):
+    if TIMER_FOLLOWUP.fullmatch(t.strip()) and timers(): return timer_status()   # "how can I track it?" right after setting one
     if not re.search(r'\b(?:timer|alarm|wake me)\b', t): return None
     if re.search(r'\b(?:cancel|stop|delete|remove|clear|turn off)\b', t):
         rows = timers()
@@ -2627,10 +2646,8 @@ def quick_timer(t):
         save_timers([])
         if not rows: return 'There are no timers running.'
         return f"Cancelled {len(rows)} timers and alarms." if len(rows) > 1 else f"Cancelled your {rows[0]['label']}."
-    if re.search(r'\b(?:how (?:much|long)|left|remaining)\b', t):
-        rows = sorted(timers(), key=lambda r: r['ends'])
-        if not rows: return 'There are no timers running.'
-        return ' '.join(f"Your {r['label']} has {span(r['ends'] - time.time())} left." for r in rows[:3])
+    if re.search(r'\b(?:how (?:much|long)|left|remaining|track|check|status)\b', t):
+        return timer_status()
     if 'alarm' in t or 'wake me' in t:
         m = re.search(r'\b(\d{1,2}):?(\d{2})?\s*(a\.?\s?m|p\.?\s?m)?\b', t)   # spoken "6:30" may arrive as "630\"
         if not m or int(m[1]) > 23: return None
@@ -2899,7 +2916,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -8662,7 +8679,7 @@ def main():
     displays.join()
     scr = describe(displays.screens, fx, fy)
     if os.environ.get('ATTICUS_SCREEN'): scr += '; Request screen (default for unnamed moves and drawings): ' + os.environ['ATTICUS_SCREEN']
-    ctx = f'Front app: {app}. Front window: {win or "?"}.' + f' Screens: {scr}. Now: {time.strftime("%a %b %d %Y %I:%M %p")}.'
+    ctx = f'Front app: {app}. Front window: {win or "?"}.' + f' Screens: {scr}. Now: {time.strftime("%a %b %d %Y %I:%M %p")}.' + timer_context()
     ctx += system_ui_context()
     try:
         with open(WORKED) as f: w = json.load(f) if time.time() - os.path.getmtime(WORKED) < 600 else None

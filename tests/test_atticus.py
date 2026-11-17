@@ -1991,6 +1991,15 @@ class WatchAndBudgetTests(unittest.TestCase):
             self.assertEqual(atticus.quick_answer(atticus.plain('how many millilitres in a litre')), '1 liter is 1,000 milliliters.')
             self.assertEqual(atticus.quick_answer(atticus.plain("what's five times six")), "That's 30.")
 
+    def test_timer_followups_and_ai_context(self):   # F.R.I.D.A.Y: "how can I track it?" right after setting a timer
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
+             patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)):
+            self.assertIsNone(atticus.quick_answer(atticus.plain('How can I track it?')))   # no timer: not a timer question
+            atticus.quick_answer(atticus.plain('Set a timer for two minutes.'))
+            self.assertEqual(atticus.quick_answer(atticus.plain('How can I track it?')), 'Your 2 minute timer has 2 minutes left.')
+            self.assertIsNone(atticus.quick_answer(atticus.plain('How can I track my package?')))
+            self.assertIn('not in the Clock app', atticus.timer_context())
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:
