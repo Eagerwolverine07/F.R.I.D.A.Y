@@ -2189,7 +2189,7 @@ def fast(text):
     if quick:
         return quick
     if os.environ.get('ATTICUS_LIVE') != '1':   # F.R.I.D.A.Y: weather, instantly; mid-sentence it waits for the whole question
-        quick = fast_weather(t)
+        quick = fast_weather(t) or quick_answer(t)   # F.R.I.D.A.Y: weather, time, timers, math, units, money, Mac, sun, air, words, facts
         if quick: return quick
     m = re.fullmatch(r'remember how to (.+?)(?: for (?:the )?future)?', t)
     if m and pref('learn', True):
@@ -2437,11 +2437,9 @@ def weather_place(q):
 def weather_data(q, days=4):
     """Open-Meteo (free, no key): (place name, US units?, forecast JSON), or None if no place or offline."""
     place = weather_place(q)
-    if not place: return None
+    spot = geocode(place) if place else here()   # no place named: where the user is
+    if not spot: return None
     try:
-        found = json.loads(get('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + urllib.parse.quote(place), timeout=4)).get('results') or []
-        if not found: return None
-        spot = found[0]
         us = spot.get('country_code') == 'US'
         data = json.loads(get('https://api.open-meteo.com/v1/forecast?' + urllib.parse.urlencode({
             'latitude': spot['latitude'], 'longitude': spot['longitude'], 'timezone': 'auto', 'forecast_days': days,
@@ -2467,6 +2465,403 @@ def weather(q):
                      f'{WEATHER_CODES.get(day["weather_code"][i], "")}, {day["precipitation_probability_max"][i]}% chance of rain or snow')
     return '\n'.join(lines)
 
+
+
+# ---- F.R.I.D.A.Y quick answers: Siri-style one-line replies with no AI. Each returns None when the ask isn't clearly its kind. ----
+
+def geocode(place):
+    """A place name -> Open-Meteo's best match {name, admin1, country_code, latitude, longitude, timezone}, or None."""
+    try:
+        found = json.loads(get('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + urllib.parse.quote(place), timeout=4)).get('results') or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    return found[0] if found else None
+
+
+def here():
+    """The user's approximate location from their internet connection (ipinfo.io, free, no key), cached for an hour; None offline."""
+    path = os.path.join(DIR, 'friday-location.json')
+    try:
+        if time.time() - os.path.getmtime(path) < 3600:
+            with open(path) as f: return json.load(f)
+    except (OSError, ValueError):
+        pass
+    try:
+        d = json.loads(get('https://ipinfo.io/json', timeout=3))
+        lat, lon = (float(x) for x in d['loc'].split(','))
+        spot = {'name': d.get('city') or 'your area', 'admin1': d.get('region', ''), 'country_code': d.get('country', ''),
+                'latitude': lat, 'longitude': lon, 'timezone': d.get('timezone', '')}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(path, 'w') as f: json.dump(spot, f)
+    except OSError:
+        pass
+    return spot
+
+
+def spot_for(place):
+    """A named place, or where the user is when none was named."""
+    place = (place or '').strip(' ?')
+    return geocode(place) if place else here()
+
+
+def clock(dt):
+    return f"{dt.hour % 12 or 12}:{dt.minute:02d} {'AM' if dt.hour < 12 else 'PM'}"
+
+
+def number(x):
+    """43.2, 1,250, 0.0035: short, as said aloud."""
+    if x == int(x) and abs(x) < 1e15: return f'{int(x):,}'
+    if abs(x) >= 100: return f'{x:,.1f}'.rstrip('0').rstrip('.')
+    if abs(x) >= 0.01: return f'{x:,.2f}'.rstrip('0').rstrip('.')
+    return f'{x:.3g}'
+
+
+def quick_time(t):
+    m = re.fullmatch(r"(?:what|whats|what's)(?: is)? (?:the )?(?:current )?time(?: is it)?(?: right)?(?: now)?(?: in (.+))?|what time is it(?: right)?(?: now)?(?: in (.+))?|time in (.+)", t)
+    if m:
+        place = m[1] or m[2] or m[3]
+        if not place: return f"It's {clock(datetime.now())}."
+        spot = geocode(place)
+        if not spot or not spot.get('timezone'): return None
+        from zoneinfo import ZoneInfo
+        return f"It's {clock(datetime.now(ZoneInfo(spot['timezone'])))} in {spot['name']}."
+    if re.fullmatch(r"(?:what|whats|what's)(?: is)? (?:the |today's |todays )?(?:date|day)(?: is it)?(?: today)?|what day is (?:it|today)(?: today)?", t):
+        now = datetime.now()
+        return f"It's {now.strftime('%A, %B')} {now.day}."
+    return None
+
+
+# Timers and alarms: a detached `sleep` that chimes, speaks and posts a notification; F.R.I.D.A.Y can quit meanwhile.
+def timers_path():
+    return os.path.join(DIR, 'friday-timers.json')
+
+
+def timers():
+    try:
+        with open(timers_path()) as f: rows = json.load(f)
+    except (OSError, ValueError):
+        rows = []
+    return [r for r in rows if isinstance(r, dict) and r.get('ends', 0) > time.time()]
+
+
+def save_timers(rows):
+    try:
+        os.makedirs(DIR, exist_ok=True)
+        with open(timers_path(), 'w') as f: json.dump(rows, f)
+    except OSError:
+        pass
+
+
+def span(seconds):
+    seconds = int(round(seconds))
+    h, rest = divmod(seconds, 3600)
+    m, s = divmod(rest, 60)
+    parts = [f'{h} hour' + ('s' if h != 1 else '')] if h else []
+    if m: parts.append(f'{m} minute' + ('s' if m != 1 else ''))
+    if s and not h: parts.append(f'{s} second' + ('s' if s != 1 else ''))
+    return ' and '.join(parts) or '0 seconds'
+
+
+def start_timer(seconds, label, done):
+    chime = 'afplay /System/Library/Sounds/Glass.aiff'
+    note = 'display notification ' + json.dumps(done) + ' with title "F.R.I.D.A.Y"'
+    script = f'sleep {int(seconds)}; {chime}; {chime}; say {shlex.quote(done)}; osascript -e {shlex.quote(note)}; {chime}'
+    p = subprocess.Popen(['/bin/sh', '-c', script], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    save_timers(timers() + [{'pid': p.pid, 'ends': time.time() + seconds, 'label': label}])
+    fast.cmds = []
+
+
+def quick_timer(t):
+    if not re.search(r'\b(?:timer|alarm|wake me)\b', t): return None
+    if re.search(r'\b(?:cancel|stop|delete|remove|clear|turn off)\b', t):
+        rows = timers()
+        for r in rows:
+            try: os.killpg(r['pid'], signal.SIGTERM)
+            except (OSError, KeyError, TypeError): pass
+        save_timers([])
+        if not rows: return 'There are no timers running.'
+        return f"Cancelled {len(rows)} timers and alarms." if len(rows) > 1 else f"Cancelled your {rows[0]['label']}."
+    if re.search(r'\b(?:how (?:much|long)|left|remaining)\b', t):
+        rows = sorted(timers(), key=lambda r: r['ends'])
+        if not rows: return 'There are no timers running.'
+        return ' '.join(f"Your {r['label']} has {span(r['ends'] - time.time())} left." for r in rows[:3])
+    if 'alarm' in t or 'wake me' in t:
+        m = re.search(r'\b(\d{1,2}):?(\d{2})?\s*(a\.?\s?m|p\.?\s?m)?\b', t)   # spoken "6:30" may arrive as "630\"
+        if not m or int(m[1]) > 23: return None
+        hour, minute, half = int(m[1]), int(m[2] or 0), (m[3] or '').replace('.', '').replace(' ', '')
+        if minute > 59: return None
+        now = datetime.now()
+        if half == 'pm' and hour < 12: hour += 12
+        if half == 'am' and hour == 12: hour = 0
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if not half and hour <= 12:   # "7" means the next 7 o'clock, morning or evening
+            for option in (target, target.replace(hour=(hour + 12) % 24)):
+                if option > now: target = option; break
+        while target <= now: target = target.fromtimestamp(target.timestamp() + 86400)
+        label = f'{clock(target)} alarm'
+        start_timer((target - now).total_seconds(), label, f"It's {clock(target)}. This is your alarm.")
+        return f"Alarm set for {clock(target)}, {span((target - now).total_seconds())} from now."
+    text = re.sub(r'\bhalf an hour\b', '30 minutes', t)
+    text = re.sub(r'\b(?:an|a|one) (hour|minute|second)\b', r'1 \1', text)
+    text = re.sub(r'\b(\d+) and a half (hour|minute)s?\b|\b(\d+) (hour|minute)s? and a half\b', lambda m: f'{m[1] or m[3]}.5 {m[2] or m[4]}s', text)
+    total = sum(float(n) * {'h': 3600, 'm': 60, 's': 1}[u[0]]
+                for n, u in re.findall(r'(\d+(?:\.\d+)?)\s*-?\s*(hours?|hrs?|minutes?|mins?|seconds?|secs?)\b', text))
+    if not total or total > 86400: return None
+    label = f'{span(total)} timer'.replace(' and ', ' ')
+    label = re.sub(r'(\d+) (hour|minute|second)s\b', r'\1 \2', label)   # "10 minute timer"
+    start_timer(total, label, f'Your {label} is done.')
+    return f"Timer set for {span(total)}."
+
+
+def safe_math(expr):
+    import ast, math
+    def ev(node):
+        if isinstance(node, ast.Expression): return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)): return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)): return -ev(node.operand) if isinstance(node.op, ast.USub) else ev(node.operand)
+        if isinstance(node, ast.BinOp):
+            a, b = ev(node.left), ev(node.right)
+            if isinstance(node.op, ast.Add): return a + b
+            if isinstance(node.op, ast.Sub): return a - b
+            if isinstance(node.op, ast.Mult): return a * b
+            if isinstance(node.op, ast.Div): return a / b
+            if isinstance(node.op, ast.Pow) and abs(b) <= 100: return a ** b
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'sqrt' and len(node.args) == 1: return math.sqrt(ev(node.args[0]))
+        raise ValueError('not plain math')
+    return ev(ast.parse(expr, mode='eval'))
+
+
+def quick_math(t):
+    m = re.fullmatch(r"(?:what's|whats|what is|calculate|compute|how much is|solve)\s+(.+?)(?: equal| equals)?", t)
+    if not m: return None
+    e = ' ' + m[1] + ' '
+    e = re.sub(r'(\d+(?:\.\d+)?)\s*(?:%|percent) of\s*', r'(\1/100)*', e)
+    e = re.sub(r'\bthe square root of\b|\bsquare root of\b', ' sqrt ', e)
+    e = re.sub(r'\bsqrt\s*(\d+(?:\.\d+)?)', r'sqrt(\1)', e)
+    for words, op in ((r'\bplus\b|\band\b(?= \d)', '+'), (r'\bminus\b|\bless\b', '-'), (r'\bmultiplied by\b|\btimes\b|\bx\b(?= *\d)', '*'),
+                      (r'\bdivided by\b|\bover\b', '/'), (r'\bto the power of\b|\bto the\b|\braised to\b', '**'), (r'\bsquared\b', '**2'), (r'\bcubed\b', '**3')):
+        e = re.sub(words, f' {op} ', e)
+    e = e.replace('^', '**').replace('×', '*').replace('÷', '/')
+    e = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', e)
+    if not re.fullmatch(r'[\d\.\s\+\-\*/\(\)sqrt]+', e) or not re.search(r'\d', e) or not re.search(r'[\+\-\*/]|sqrt', e): return None
+    try: result = safe_math(e.strip())
+    except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError): return None
+    return f"That's {number(result)}."
+
+
+# Units: factor to the kind's base unit; spoken names first so replies read naturally
+UNIT_TABLE = {
+    'length': {'millimeter': .001, 'centimeter': .01, 'meter': 1, 'kilometer': 1000, 'inch': .0254, 'foot': .3048, 'yard': .9144, 'mile': 1609.344},
+    'weight': {'milligram': .001, 'gram': 1, 'kilogram': 1000, 'ounce': 28.349523, 'pound': 453.59237, 'stone': 6350.29318, 'ton': 907184.74},
+    'volume': {'milliliter': 1, 'liter': 1000, 'teaspoon': 4.928922, 'tablespoon': 14.786765, 'cup': 236.588237, 'fluid ounce': 29.573530,
+               'pint': 473.176473, 'quart': 946.352946, 'gallon': 3785.411784},
+    'speed': {'mile per hour': .44704, 'kilometer per hour': 1 / 3.6, 'meter per second': 1, 'knot': .514444},
+    'temperature': {'fahrenheit': None, 'celsius': None, 'kelvin': None},
+}
+UNIT_ALIASES = {'mm': 'millimeter', 'cm': 'centimeter', 'm': 'meter', 'metre': 'meter', 'km': 'kilometer', 'kilometre': 'kilometer', 'in': 'inch', 'inches': 'inch',
+                'ft': 'foot', 'feet': 'foot', 'yd': 'yard', 'mi': 'mile', 'mg': 'milligram', 'g': 'gram', 'kg': 'kilogram', 'kilo': 'kilogram', 'oz': 'ounce',
+                'lb': 'pound', 'lbs': 'pound', 'ml': 'milliliter', 'millilitre': 'milliliter', 'l': 'liter', 'litre': 'liter', 'tsp': 'teaspoon', 'tbsp': 'tablespoon',
+                'fl oz': 'fluid ounce', 'mph': 'mile per hour', 'miles an hour': 'mile per hour', 'kph': 'kilometer per hour', 'km/h': 'kilometer per hour', 'kmh': 'kilometer per hour',
+                'kilometers an hour': 'kilometer per hour', 'f': 'fahrenheit', 'c': 'celsius', 'centigrade': 'celsius', 'k': 'kelvin', 'tons': 'ton'}
+
+
+def unit_of(word):
+    w = re.sub(r'^(?:a |an |one |degrees? |the )+', '', word.strip(' ?.')).replace('°', '').strip()
+    if w in UNIT_ALIASES: w = UNIT_ALIASES[w]
+    w = re.sub(r'\bmiles\b', 'mile', re.sub(r'\bkilometers\b', 'kilometer', re.sub(r'\bmeters\b', 'meter', w)))
+    for kind, table in UNIT_TABLE.items():
+        for name in table:
+            if w in (name, name + 's', name + 'es', name.replace('foot', 'feet')): return kind, name
+    return None
+
+
+def convert(value, a, b):
+    kind = a[0]
+    if kind != 'temperature': return value * UNIT_TABLE[kind][a[1]] / UNIT_TABLE[kind][b[1]]
+    c = {'celsius': value, 'fahrenheit': (value - 32) * 5 / 9, 'kelvin': value - 273.15}[a[1]]
+    return {'celsius': c, 'fahrenheit': c * 9 / 5 + 32, 'kelvin': c + 273.15}[b[1]]
+
+
+def unit_words(value, name):
+    if name in ('fahrenheit', 'celsius', 'kelvin'):
+        value = round(value, 1)
+        return f'{number(value)} degrees {name.capitalize()}' if name != 'kelvin' else f'{number(value)} kelvin'
+    plural = {'foot': 'feet', 'inch': 'inches', 'mile per hour': 'miles per hour', 'kilometer per hour': 'kilometers per hour', 'meter per second': 'meters per second'}.get(name, name + 's')
+    return f'{number(value)} {name if value == 1 else plural}'
+
+
+def amount_question(t):
+    """(amount, from words, to words) for "how many X in N Y" / "N X in|to Y", else None."""
+    m = re.fullmatch(r"how many (.+?) (?:are )?(?:in|per) (?:a |an |one )?(\d+(?:\.\d+)?)? ?(.+)", t)
+    if m: return float(m[2] or 1), m[3], m[1]
+    m = re.fullmatch(r"(?:what's |whats |what is |convert |how much is |how much are )?(-?\d+(?:\.\d+)?) ?(.+?) (?:in|to|into|as) (.+)", t)
+    if m: return float(m[1]), m[2], m[3]
+    return None
+
+
+def quick_units(t):
+    q = amount_question(t)
+    if not q: return None
+    a, b = unit_of(q[1]), unit_of(q[2])
+    if not a or not b or a[0] != b[0] or a == b: return None
+    return f"{unit_words(q[0], a[1])} is {unit_words(convert(q[0], a, b), b[1])}."
+
+
+CURRENCIES = {'usd': 'USD', 'dollar': 'USD', 'us dollar': 'USD', 'buck': 'USD', 'eur': 'EUR', 'euro': 'EUR', 'gbp': 'GBP', 'pound': 'GBP', 'british pound': 'GBP',
+              'pound sterling': 'GBP', 'quid': 'GBP', 'jpy': 'JPY', 'yen': 'JPY', 'japanese yen': 'JPY', 'inr': 'INR', 'rupee': 'INR', 'indian rupee': 'INR',
+              'cad': 'CAD', 'canadian dollar': 'CAD', 'aud': 'AUD', 'australian dollar': 'AUD', 'cny': 'CNY', 'yuan': 'CNY', 'rmb': 'CNY', 'chf': 'CHF',
+              'swiss franc': 'CHF', 'franc': 'CHF', 'mxn': 'MXN', 'peso': 'MXN', 'mexican peso': 'MXN', 'krw': 'KRW', 'won': 'KRW', 'brl': 'BRL', 'real': 'BRL',
+              'reais': 'BRL', 'sgd': 'SGD', 'singapore dollar': 'SGD', 'hkd': 'HKD', 'hong kong dollar': 'HKD', 'nzd': 'NZD', 'new zealand dollar': 'NZD',
+              'sek': 'SEK', 'krona': 'SEK', 'swedish krona': 'SEK'}
+CURRENCY_NAMES = {'USD': 'US dollars', 'EUR': 'euros', 'GBP': 'British pounds', 'JPY': 'yen', 'INR': 'rupees', 'CAD': 'Canadian dollars', 'AUD': 'Australian dollars',
+                  'CNY': 'yuan', 'CHF': 'Swiss francs', 'MXN': 'pesos', 'KRW': 'won', 'BRL': 'reais', 'SGD': 'Singapore dollars', 'HKD': 'Hong Kong dollars',
+                  'NZD': 'New Zealand dollars', 'SEK': 'kronor'}
+
+
+def currency_of(words):
+    w = re.sub(r'^(?:a |an |one |the )+', '', words.strip(' ?.')).replace('$', 'dollar').replace('€', 'euro').replace('£', 'pound')
+    return CURRENCIES.get(w) or CURRENCIES.get(re.sub(r'(?:e?s)$', '', w)) or CURRENCIES.get(w.rstrip('s'))
+
+
+def quick_currency(t):
+    t = re.sub(r'^\$(\d)', r'\1 dollars', t)
+    q = amount_question(t)
+    if not q: return None
+    a, b = currency_of(q[1]), currency_of(q[2])
+    if not a or not b or a == b: return None
+    for base in ('https://api.frankfurter.dev/v1/latest?', 'https://api.frankfurter.app/latest?'):   # European Central Bank rates, free, no key
+        try:
+            rate = json.loads(get(base + urllib.parse.urlencode({'amount': q[0], 'from': a, 'to': b}), timeout=4))['rates'][b]
+            break
+        except (OSError, ValueError, KeyError, TypeError):
+            rate = None
+    if rate is None: return None
+    return f"{number(q[0])} {CURRENCY_NAMES[a]} is about {number(round(rate, 2))} {CURRENCY_NAMES[b]}."
+
+
+def mac(script):
+    try: return subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired): return None
+
+
+def quick_mac(t):
+    if re.fullmatch(r'(?:how much |what(?:\'s| is) (?:my |the )?)?battery(?: (?:do i have|left|level|percentage|life))?(?: left)?|how(?:\'s| is) (?:my |the )?battery', t):
+        try: out = subprocess.run(['pmset', '-g', 'batt'], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.TimeoutExpired): return None
+        m = re.search(r'(\d+)%;\s*([^;]+);\s*(?:(\d+):(\d+) remaining)?', out)
+        if not m: return None
+        state = m[2].strip()
+        left = f', about {span(int(m[3]) * 3600 + int(m[4]) * 60)} left' if m[3] and state == 'discharging' and (m[3], m[4]) != ('0', '00') else ''
+        return f"You're at {m[1]}%, {'charging' if state == 'charging' else 'fully charged' if state in ('charged', 'finishing charge') else 'on battery' if state == 'discharging' else state}{left}."
+    m = re.fullmatch(r'(?:set |turn )?(?:the )?volume (?:to |at )?(\d{1,3})(?: percent|%)?', t)
+    if m and int(m[1]) <= 100:
+        mac(f'set volume output volume {m[1]} without output muted'); fast.cmds = []
+        return f'Volume set to {m[1]}%.'
+    up = re.fullmatch(r'(?:turn (?:it|the volume|the sound) up|volume up|louder|turn up the volume|increase (?:the )?volume)', t)
+    down = re.fullmatch(r'(?:turn (?:it|the volume|the sound) down|volume down|quieter|softer|turn down the volume|lower (?:the )?volume|decrease (?:the )?volume)', t)
+    if up or down:
+        level = mac('output volume of (get volume settings)')
+        if not level or not level.isdigit(): return None
+        new = max(0, min(100, int(level) + (15 if up else -15)))
+        mac(f'set volume output volume {new} without output muted'); fast.cmds = []
+        return f'Volume {"up" if up else "down"} to {new}%.'
+    if re.fullmatch(r'(?:mute|unmute)(?: (?:the )?(?:volume|sound|audio|mac|computer))?', t):
+        on = t.startswith('mute')
+        mac(f'set volume {"with" if on else "without"} output muted'); fast.cmds = []
+        return 'Muted.' if on else 'Unmuted.'
+    m = re.fullmatch(r'(?:turn (?:the )?brightness (up|down)|brightness (up|down)|(brighter|dimmer)|(?:make (?:the )?screen|screen) (brighter|dimmer))', t)
+    if m:
+        way = next(x for x in m.groups() if x)
+        key = 144 if way in ('up', 'brighter') else 145
+        mac(f'tell application "System Events" to repeat 3 times\nkey code {key}\nend repeat'); fast.cmds = []
+        return f'Brightness {"up" if key == 144 else "down"}.'
+    return None
+
+
+def quick_sun(t):
+    m = re.fullmatch(r"(?:when(?:'s| is)|what time is|what time's) (?:the )?(sunrise|sunset)(?: (today|tonight|tomorrow))?(?: in (.+?))?(?: (today|tonight|tomorrow))?|"
+                     r"(?:when|what time) (?:does|will) the sun (rise|set)(?: (today|tonight|tomorrow))?(?: in (.+?))?(?: (today|tonight|tomorrow))?", t)
+    if not m: return None
+    which = 'sunrise' if (m[1] or m[5]) in ('sunrise', 'rise') else 'sunset'
+    day = m[2] or m[4] or m[6] or m[8] or 'today'
+    spot = spot_for(m[3] or m[7])
+    if not spot: return None
+    try:
+        data = json.loads(get('https://api.open-meteo.com/v1/forecast?' + urllib.parse.urlencode({
+            'latitude': spot['latitude'], 'longitude': spot['longitude'], 'timezone': 'auto', 'forecast_days': 2, 'daily': 'sunrise,sunset'}), timeout=4))
+        at = datetime.strptime(data['daily'][which][1 if day == 'tomorrow' else 0], '%Y-%m-%dT%H:%M')
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+    when = 'tomorrow' if day == 'tomorrow' else 'today'
+    return f"{which.capitalize()} in {spot['name']} is at {clock(at)} {when}."
+
+
+def quick_air(t):
+    m = re.fullmatch(r"(?:what(?:'s| is) |how(?:'s| is) )?(?:the )?(?:air quality|aqi|air)(?: like)?(?: index)?(?: in (.+?))?(?: today| right now| now)?", t)
+    if not m or t in ('air',): return None
+    spot = spot_for(m[1])
+    if not spot: return None
+    try:
+        aqi = json.loads(get('https://air-quality-api.open-meteo.com/v1/air-quality?' + urllib.parse.urlencode({
+            'latitude': spot['latitude'], 'longitude': spot['longitude'], 'current': 'us_aqi'}), timeout=4))['current']['us_aqi']
+        aqi = round(aqi)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    level = ('good' if aqi <= 50 else 'moderate' if aqi <= 100 else 'unhealthy for sensitive groups' if aqi <= 150 else
+             'unhealthy' if aqi <= 200 else 'very unhealthy' if aqi <= 300 else 'hazardous')
+    return f"Air quality in {spot['name']} is {level}, with an AQI of {aqi}."
+
+
+def quick_define(t):
+    m = re.fullmatch(r"(?:what does (?:the word )?([a-z'-]+) mean|define (?:the word )?([a-z'-]+)|(?:what's |what is )?the (?:definition|meaning) of (?:the word )?([a-z'-]+)|what's ([a-z'-]+) mean)", t)
+    if not m: return None
+    word = next(x for x in m.groups() if x)
+    try:
+        entry = json.loads(get('https://api.dictionaryapi.dev/api/v2/entries/en/' + urllib.parse.quote(word), timeout=4))[0]
+        meaning = entry['meanings'][0]
+        definition = meaning['definitions'][0]['definition'].rstrip('.')
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+    return f"{word.capitalize()}, {meaning.get('partOfSpeech', 'word')}: {definition[0].lower() + definition[1:]}."
+
+
+def quick_wiki(t):
+    """"Who is <name>" / "what is <thing>": Wikipedia's first sentence, only when its article title matches every word asked."""
+    m = re.fullmatch(r"(?:who is|who's|who was|whos) (.+)|(?:what is|what's|whats) (?:an? )?(.+)|tell me about (.+)", t)
+    if not m: return None
+    topic = next(x for x in m.groups() if x).strip()
+    words, exact = topic.split(), not (m[1] or m[3] and len(topic.split()) > 1)   # people may have middle names; a thing must be its article's exact title
+    if topic in ('up', 'new', 'going on', 'happening', 'wrong', 'good', 'next', 'left', 'love', 'life', 'yourself', 'you', 'that', 'this', 'it', 'he', 'she', 'they', 'there', 'here'):
+        return None
+    if not 1 <= len(words) <= 4 or re.search(r"\b(?:the|of|my|your|it|this|that|these|those|you|i|me|in|on|for|to|current|now|today|best|price|ceo|president|weather|time|date)\b|\d", topic):
+        return None
+    try:
+        found = json.loads(get('https://en.wikipedia.org/w/api.php?' + urllib.parse.urlencode({
+            'action': 'opensearch', 'limit': 1, 'namespace': 0, 'format': 'json', 'search': topic}), timeout=4))[1]
+        title = re.sub(r'[^\w ]', ' ', found[0].lower()).split() if found else []
+        if not found or (title != words if exact else not set(words) <= set(title)): return None
+        page = json.loads(get('https://en.wikipedia.org/api/rest_v1/page/summary/' + urllib.parse.quote(found[0].replace(' ', '_')), timeout=4))
+    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return None
+    if page.get('type') != 'standard' or not page.get('extract'): return None
+    text = re.sub(r'\s*\([^()]*\)', '', page['extract'])
+    first = re.split(r'(?<=[a-z0-9\)]\.)\s+(?=[A-Z])', text)[0].strip()
+    return first if 20 <= len(first) <= 400 else None
+
+
+def quick_answer(t):
+    """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
+    t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
+    for answer in (quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+        try:
+            reply = answer(t)
+        except Exception:
+            reply = None
+        if reply: return reply
+    return None
 
 WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 

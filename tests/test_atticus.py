@@ -1935,6 +1935,32 @@ class WatchAndBudgetTests(unittest.TestCase):
         with patch.object(atticus, 'get', side_effect=atticus.urllib.error.URLError('offline')):
             self.assertIsNone(atticus.fast_weather(atticus.plain('weather in Boston tomorrow')))   # offline: the AI takes it
 
+    def test_quick_answers_need_no_ai(self):   # F.R.I.D.A.Y: Siri-style replies
+        q = lambda words: atticus.quick_answer(atticus.plain(words))
+        with patch.object(atticus, 'get', side_effect=atticus.urllib.error.URLError('offline')):
+            self.assertEqual(q("What's 18% of 240?"), "That's 43.2.")
+            self.assertEqual(q("What's 1,250 divided by 12?"), "That's 104.2.")
+            self.assertEqual(q('How many cups in a liter?'), '1 liter is 4.23 cups.')
+            self.assertEqual(q("What's 70 Fahrenheit in Celsius?"), '70 degrees Fahrenheit is 21.1 degrees Celsius.')
+            self.assertEqual(q('How many feet in a mile'), '1 mile is 5,280 feet.')
+            self.assertTrue(q('What time is it?').startswith("It's "))
+            for other in ('open spotify', "what's up", 'write an email to sam', "what's 5 apples", 'tell me about yourself'):
+                self.assertIsNone(q(other), other)
+            self.assertIsNone(q("What's 100 euros in dollars?"))   # offline: the AI takes it
+        with patch.object(atticus, 'get', return_value=json.dumps({'rates': {'USD': 108.34}})):
+            self.assertEqual(q("What's 100 euros in dollars?"), '100 euros is about 108.3 US dollars.')
+
+    def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
+             patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:
+            self.assertEqual(atticus.quick_answer('set a timer for an hour and a half'), 'Timer set for 1 hour and 30 minutes.')
+            self.assertTrue(popen.call_args.kwargs['start_new_session'])
+            self.assertIn('sleep 5400', popen.call_args.args[0][2])
+            self.assertIn('1 hour 30 minute timer', atticus.quick_answer('how much time is left on my timer'))
+            self.assertEqual(atticus.quick_answer('cancel my timer'), 'Cancelled your 1 hour 30 minute timer.')
+            kill.assert_called_once()
+            self.assertEqual(atticus.quick_answer('cancel my timer'), 'There are no timers running.')
+
     def test_unwatch_tolerates_a_watcher_removing_its_own_marker(self):
         with tempfile.TemporaryDirectory() as root:
             marker = Path(root) / '123'
