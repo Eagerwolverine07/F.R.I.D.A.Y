@@ -2713,6 +2713,7 @@ UNIT_ALIASES = {'mm': 'millimeter', 'cm': 'centimeter', 'm': 'meter', 'metre': '
 
 def unit_of(word):
     w = re.sub(r'^(?:a |an |one |degrees? |the )+', '', word.strip(' ?.')).replace('°', '').strip()
+    w = w.replace('metre', 'meter').replace('litre', 'liter')   # British spellings
     if w in UNIT_ALIASES: w = UNIT_ALIASES[w]
     w = re.sub(r'\bmiles\b', 'mile', re.sub(r'\bkilometers\b', 'kilometer', re.sub(r'\bmeters\b', 'meter', w)))
     for kind, table in UNIT_TABLE.items():
@@ -2906,9 +2907,41 @@ def quick_hint(t):
     return bool(QUICK_HINT.search(t))
 
 
+NUMBER_WORDS = {w: i for i, w in enumerate('zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
+                                             'sixteen seventeen eighteen nineteen'.split())}
+NUMBER_WORDS.update({w: 10 * i for i, w in enumerate('twenty thirty forty fifty sixty seventy eighty ninety'.split(), 2)})
+SCALE_WORDS = {'hundred': 100, 'thousand': 1000, 'million': 1000000}
+
+
+def spoken_numbers(t):
+    """"a hundred centimetres" -> "100 centimetres", "twenty five minutes" -> "25 minutes", "two thousand and five" -> "2005"."""
+    words, out, i = t.split(), [], 0
+    while i < len(words):
+        w = words[i].replace('-', ' ').split()
+        start = i
+        if words[i] in ('a', 'an') and i + 1 < len(words) and words[i + 1] in SCALE_WORDS:
+            i += 1; w = [words[i]]
+        if not all(x in NUMBER_WORDS or x in SCALE_WORDS for x in w):
+            out.append(words[i]); i += 1; continue
+        total = current = 0
+        while i < len(words):
+            parts = words[i].replace('-', ' ').split()
+            if words[i] == 'and' and i + 1 < len(words) and words[i + 1] in NUMBER_WORDS and (total or current >= 100): i += 1; continue
+            if not parts or not all(x in NUMBER_WORDS or x in SCALE_WORDS for x in parts): break
+            for x in parts:
+                if x in NUMBER_WORDS: current += NUMBER_WORDS[x]
+                elif x == 'hundred': current = (current or 1) * 100
+                else: total += (current or 1) * SCALE_WORDS[x]; current = 0
+            i += 1
+        out.append(str(total + current) if i > start else words[start])
+        if i == start: i += 1
+    return ' '.join(out)
+
+
 def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
+    t = spoken_numbers(t)
     for answer in (quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)

@@ -1983,6 +1983,14 @@ class WatchAndBudgetTests(unittest.TestCase):
             with self.assertRaises(atticus.urllib.error.URLError): atticus.get('https://example.com/x')
         run.assert_not_called()   # only certificate failures retry
 
+    def test_quick_answers_understand_spoken_numbers_and_british_units(self):   # F.R.I.D.A.Y
+        self.assertEqual(atticus.spoken_numbers('two thousand and five'), '2005')
+        self.assertEqual(atticus.spoken_numbers('twenty five minutes'), '25 minutes')
+        with patch.object(atticus, 'get', side_effect=atticus.urllib.error.URLError('offline')):
+            self.assertEqual(atticus.quick_answer(atticus.plain("Friday, what's hundred centimetre in feet?")), '100 centimeters is 3.28 feet.')
+            self.assertEqual(atticus.quick_answer(atticus.plain('how many millilitres in a litre')), '1 liter is 1,000 milliliters.')
+            self.assertEqual(atticus.quick_answer(atticus.plain("what's five times six")), "That's 30.")
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:
