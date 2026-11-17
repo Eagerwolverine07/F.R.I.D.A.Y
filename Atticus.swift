@@ -2537,36 +2537,73 @@ final class App: NSObject, WKScriptMessageHandler {
     // F.R.I.D.A.Y custom voice: VoiceStudio (github.com/debpalash/VoiceStudio) running on this Mac makes the audio in the
     // voice named in Prefs "voiceStudioVoice"; anything wrong (not open, no such voice, an error) falls back to `say`.
     var studioToken = 0, studioPending = false, studioFetch: Process?
+    final class VoiceQueue { var ready: [Int: String] = [:], next = 0, playing = false, ended: Int; init(_ count: Int) { ended = count } }
+    // Sentence by sentence: the first plays while the next is made, so the voice starts after one short sentence, not the whole reply.
+    static func voiceChunks(_ words: String) -> [String] {
+        var parts: [String] = [], current = ""
+        for sentence in words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n") {
+            current += (current.isEmpty ? "" : " ") + sentence.trimmingCharacters(in: .whitespaces)
+            if current.count >= 12 { parts.append(current); current = "" }   // "Sure." alone is too short to be worth its own request
+        }
+        if !current.isEmpty { if parts.isEmpty { parts.append(current) } else { parts[parts.count - 1] += " " + current } }
+        return parts
+    }
     func studioSpeak(_ words: String, fallback: @escaping () -> Void) {
         studioToken += 1; let token = studioToken; studioPending = true
-        let file = NSTemporaryDirectory() + "friday-voice-\(token).wav"
-        let body = (try? JSONSerialization.data(withJSONObject: ["model": "voicestudio", "voice": Prefs.str("voiceStudioVoice"), "input": words, "response_format": "wav"]))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        p.arguments = ["-q", "--silent", "--max-time", "30", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
-                       "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
-        let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
-        p.terminationHandler = { [weak self] proc in
-            let code = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            DispatchQueue.main.async {
-                guard let self, token == self.studioToken else { try? FileManager.default.removeItem(atPath: file); return }   // stopped meanwhile
-                self.studioPending = false; self.studioFetch = nil
-                let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? Int) ?? 0
-                guard proc.terminationStatus == 0, code == "200", size > 1000 else {
-                    try? FileManager.default.removeItem(atPath: file)
-                    if !(proc.terminationStatus == 7) { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@); using the Mac voice", proc.terminationStatus, code) }
-                    return fallback()
-                }
-                let player = Process(); player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); player.arguments = [file]
-                self.play(player) { try? FileManager.default.removeItem(atPath: file) }
+        let parts = Self.voiceChunks(words)
+        guard !parts.isEmpty else { studioPending = false; return fallback() }
+        let q = VoiceQueue(parts.count)   // a class, not captured vars: these closures may run on other threads before hopping to main
+        func pump() {
+            guard token == studioToken, !q.playing else { return }
+            guard q.next < q.ended else { studioPending = false; return }
+            guard let file = q.ready.removeValue(forKey: q.next) else { return }   // still being made: fetch() calls back
+            q.playing = true
+            let last = q.next == q.ended - 1
+            if last { studioPending = false }   // from here the playing voice itself keeps voice mode waiting
+            let player = Process(); player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); player.arguments = [file]
+            play(player, last: last) { [weak self] in
+                try? FileManager.default.removeItem(atPath: file)
+                guard let self, token == self.studioToken else { return }
+                q.playing = false; q.next += 1; pump()
             }
         }
-        do { try p.run(); studioFetch = p } catch { studioPending = false; fallback() }
+        func fetch(_ i: Int) {
+            let file = NSTemporaryDirectory() + "friday-voice-\(token)-\(i).wav"
+            let body = (try? JSONSerialization.data(withJSONObject: ["model": "voicestudio", "voice": Prefs.str("voiceStudioVoice"), "input": parts[i], "response_format": "wav"]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            p.arguments = ["-q", "--silent", "--max-time", "30", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
+                           "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
+            let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+            p.terminationHandler = { [weak self] proc in
+                let code = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                DispatchQueue.main.async {
+                    guard let self, token == self.studioToken else { try? FileManager.default.removeItem(atPath: file); return }   // stopped meanwhile
+                    self.studioFetch = nil
+                    let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? Int) ?? 0
+                    guard proc.terminationStatus == 0, code == "200", size > 1000 else {
+                        try? FileManager.default.removeItem(atPath: file)
+                        if proc.terminationStatus != 7 { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@)", proc.terminationStatus, code) }
+                        if i == 0 { self.studioPending = false; return fallback() }   // nothing said yet: the Mac voice says it all
+                        q.ended = i; if !q.playing { pump() }; return   // stop after what was already said
+                    }
+                    q.ready[i] = file
+                    if i + 1 < parts.count { fetch(i + 1) }
+                    pump()
+                }
+            }
+            do { try p.run(); studioFetch = p } catch { if i == 0 { studioPending = false; fallback() } else { q.ended = i; pump() } }
+        }
+        fetch(0)
     }
-    func play(_ p: Process, done: @escaping () -> Void = {}) {   // the reply's voice: Esc and the hotkey stop it; voice mode listens again after it
+    func play(_ p: Process, last: Bool = true, done: @escaping () -> Void = {}) {   // the reply's voice: Esc and the hotkey stop it; voice mode listens again after the last part
         p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
+            guard let self else { return done() }
+            let mine = self.voice === p
+            if mine { self.voice = nil }
             done()
-            guard let self, self.voice === p else { return }; self.voice = nil; self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
+            guard mine, last else { return }
+            self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
             self.followUpSoon()   // voice mode: listen again as soon as it stops talking
         } }
         do { try p.run(); voice = p } catch { done() }
