@@ -2528,91 +2528,155 @@ final class App: NSObject, WKScriptMessageHandler {
         UserDefaults.standard.set(true, forKey: "voiceQualityTip")
         show(); js("notice", "Voice sounds robotic? This Mac has no natural voice yet. Get one: System Settings → Accessibility → Read & Speak → System voice → Manage Voices → download an Enhanced or Premium voice, then pick it as the System voice."); hide(after: 14)
     }
-    @discardableResult func shush() -> Bool {
+    @discardableResult func shush(keepClips: Bool = false) -> Bool {
         let pending = studioPending   // a custom-voice reply still being made counts as speaking
-        studioToken += 1; studioPending = false; studioFetch?.terminate(); studioFetch = nil
+        studioToken += 1; studioPending = false
+        if !keepClips { studioReset() }
         guard let v = voice else { return pending }; voice = nil
         guard v.isRunning else { return pending }; v.terminate(); return true
     }
-    // F.R.I.D.A.Y custom voice: VoiceStudio (github.com/debpalash/VoiceStudio) running on this Mac makes the audio in the
-    // voice named in Prefs "voiceStudioName" (default "Friday final"; names match case-insensitively). Model "tts-1" = VoiceStudio's active engine
-    // ("voicestudio" is not an engine id and is rejected with HTTP 400). Anything wrong (not open, no such voice, an error) falls back to `say`.
+    // F.R.I.D.A.Y custom voice: VoiceStudio (github.com/debpalash/VoiceStudio) running on this Mac speaks in the profile named in
+    // Prefs "voiceStudioName" (default "Friday final"). The name is looked up in GET /v1/audio/voices and sent as its profile id: an
+    // unknown name would be taken as an engine preset and give a different random voice every sentence. Model "tts-1" = the active
+    // engine. Sentences are made one at a time, starting while the answer still streams in, and play in order.
+    // Not open, no such voice or any error before the first sentence: the Mac voice (`say`) says it all.
+    final class VoiceClip { let file: String; var done = false, ok = false; var waiters: [(Bool) -> Void] = []; init(_ file: String) { self.file = file } }
     var studioToken = 0, studioPending = false, studioFetch: Process?
+    var studioClips: [String: VoiceClip] = [:], studioQueue: [String] = [], studioRound = 0, studioBusy = false
     var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
-    func studioRequest(_ text: String, to file: String) -> Process {
-        var fields: [String: Any] = ["model": "tts-1", "voice": Prefs.str("voiceStudioName"), "input": text, "response_format": "wav"]
-        if studioSteps { fields["num_step"] = 8 }
-        let body = (try? JSONSerialization.data(withJSONObject: fields)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        p.arguments = ["-q", "--silent", "--max-time", "120", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
-                       "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
-        return p
-    }
-    // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
-    func warmStudio() {
-        guard Prefs.bool("voiceStudio"), !Prefs.str("voiceStudioName").isEmpty, Date().timeIntervalSince(studioLast) > 600 else { return }
-        studioLast = Date()
-        let p = studioRequest("Okay.", to: "/dev/null"); p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
-        try? p.run()
-    }
-    final class VoiceQueue { var ready: [Int: String] = [:], next = 0, playing = false, ended: Int; init(_ count: Int) { ended = count } }
-    // Sentence by sentence: the first plays while the next is made, so the voice starts after one short sentence, not the whole reply.
-    static func voiceChunks(_ words: String) -> [String] {
+    var studioVoiceID: String?, studioVoiceAt = Date.distantPast, studioNamesShown = ""
+    var studioOn: Bool { Prefs.bool("voiceStudio") && !Prefs.str("voiceStudioName").isEmpty }
+    static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
         var parts: [String] = [], current = ""
         for sentence in words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n") {
             current += (current.isEmpty ? "" : " ") + sentence.trimmingCharacters(in: .whitespaces)
             if current.count >= 12 { parts.append(current); current = "" }   // "Sure." alone is too short to be worth its own request
         }
+        if closedOnly { return parts }   // streaming: the unfinished tail may still grow
         if !current.isEmpty { if parts.isEmpty { parts.append(current) } else { parts[parts.count - 1] += " " + current } }
         return parts
+    }
+    func studioReset() {   // a new ask, Esc or the hotkey: drop every made or queued sentence
+        studioRound += 1; studioQueue = []; studioBusy = false
+        if let f = studioFetch, f.isRunning { f.terminate() }; studioFetch = nil
+        for clip in studioClips.values { try? FileManager.default.removeItem(atPath: clip.file); clip.waiters.forEach { $0(false) } }
+        studioClips = [:]
+    }
+    func studioCurl(_ arguments: [String], done: @escaping (Int32, String) -> Void) -> Process? {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl"); p.arguments = ["-q", "--silent", "--connect-timeout", "1"] + arguments
+        let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { proc in
+            let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            DispatchQueue.main.async { done(proc.terminationStatus, text) }
+        }
+        do { try p.run(); return p } catch { done(-1, ""); return nil }
+    }
+    // The profile id for the configured name, from VoiceStudio's own list (cached a minute); nil when VoiceStudio has no such profile.
+    func studioVoice(_ found: @escaping (String?) -> Void) {
+        if let id = studioVoiceID, Date().timeIntervalSince(studioVoiceAt) < 60 { return found(id) }
+        let wanted = Prefs.str("voiceStudioName").trimmingCharacters(in: .whitespaces).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        _ = studioCurl(["--max-time", "5", "http://127.0.0.1:3900/v1/audio/voices"]) { [weak self] status, text in
+            guard let self else { return }
+            let voices = ((try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any])?["voices"] as? [[String: Any]] ?? []
+            let profiles = voices.filter { $0["type"] as? String == "profile" }
+            let key = { (v: [String: Any]) in ((v["name"] as? String) ?? "").trimmingCharacters(in: .whitespaces).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
+            let match = profiles.first { key($0) == wanted } ?? profiles.first { key($0).replacingOccurrences(of: " ", with: "") == wanted.replacingOccurrences(of: " ", with: "") }
+            studioVoiceID = match?["voice_id"] as? String; studioVoiceAt = Date()
+            if status == 0, match == nil {   // VoiceStudio answered but has no such voice: say so once, with the names it has
+                let names = profiles.compactMap { $0["name"] as? String }.joined(separator: ", ")
+                NSLog("Custom voice: no VoiceStudio voice named %@ (has: %@)", Prefs.str("voiceStudioName"), names)
+                if studioNamesShown != names {
+                    studioNamesShown = names; show()
+                    js("notice", "F.R.I.D.A.Y can’t find a VoiceStudio voice named “\(Prefs.str("voiceStudioName"))”. " + (names.isEmpty ? "VoiceStudio has no saved voices yet." : "Its voices: \(names)."))
+                    hide(after: 12)
+                }
+            }
+            found(studioVoiceID)
+        }
+    }
+    // Queue one sentence; VoiceStudio makes them one at a time, in order.
+    @discardableResult func studioClip(_ text: String) -> VoiceClip {
+        if let clip = studioClips[text] { return clip }
+        let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count).wav")
+        studioClips[text] = clip; studioQueue.append(text)
+        if !studioBusy { studioNext() }
+        return clip
+    }
+    func studioNext() {
+        guard !studioBusy, !studioQueue.isEmpty else { return }
+        let round = studioRound, text = studioQueue[0]
+        studioBusy = true   // from the voice-id lookup until this sentence is made
+        studioVoice { [weak self] id in
+            guard let self, round == self.studioRound else { return }
+            guard let clip = self.studioClips[text] else { self.studioBusy = false; self.studioQueue.removeFirst(); return self.studioNext() }
+            guard let id else {   // no VoiceStudio or no such voice: every queued sentence fails, so the Mac voice speaks
+                self.studioBusy = false
+                for t in self.studioQueue { if let c = self.studioClips[t] { c.done = true; c.waiters.forEach { $0(false) }; c.waiters = [] } }
+                self.studioQueue = []; return
+            }
+            var fields: [String: Any] = ["model": "tts-1", "voice": id, "input": text, "response_format": "wav"]
+            let steps = self.studioSteps
+            if steps { fields["num_step"] = 8 }
+            let body = (try? JSONSerialization.data(withJSONObject: fields)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            self.studioFetch = self.studioCurl(["--max-time", "120", "-o", clip.file, "-w", "%{http_code}", "-H", "Content-Type: application/json",
+                                                "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]) { [weak self] status, code in
+                guard let self, round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
+                self.studioFetch = nil; self.studioBusy = false
+                if code == "400" && steps && self.studioSteps { self.studioSteps = false; return self.studioNext() }   // this engine has no num_step
+                self.studioQueue.removeFirst()
+                let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
+                clip.ok = status == 0 && code == "200" && size > 1000; clip.done = true
+                if clip.ok { self.studioLast = Date() }
+                else if status != 7 { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@)", status, code) }
+                if !clip.ok { self.studioVoiceAt = .distantPast }   // look the voice up again next time
+                clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
+                self.studioNext()
+            }
+        }
+    }
+    // While the answer streams in: start making each finished sentence before the answer is done.
+    func studioPrefetch(_ partial: String) {
+        guard studioOn, talksBack else { return }
+        for part in Self.voiceChunks(spoken(partial), closedOnly: true) { studioClip(part) }
+    }
+    // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
+    func warmStudio() {
+        guard studioOn, Date().timeIntervalSince(studioLast) > 600 else { return }
+        studioLast = Date()
+        studioVoice { [weak self] id in
+            guard let self, let id, !self.studioBusy else { return }
+            let body = (try? JSONSerialization.data(withJSONObject: ["model": "tts-1", "voice": id, "input": "Okay.", "response_format": "wav"]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            _ = self.studioCurl(["--max-time", "120", "-o", "/dev/null", "-H", "Content-Type: application/json", "--data-binary", body,
+                                 "http://127.0.0.1:3900/v1/audio/speech"]) { _, _ in }
+        }
     }
     func studioSpeak(_ words: String, fallback: @escaping () -> Void) {
         studioToken += 1; let token = studioToken; studioPending = true
         let parts = Self.voiceChunks(words)
-        guard !parts.isEmpty else { studioPending = false; return fallback() }
-        let q = VoiceQueue(parts.count)   // a class, not captured vars: these closures may run on other threads before hopping to main
-        func pump() {
-            guard token == studioToken, !q.playing else { return }
-            guard q.next < q.ended else { studioPending = false; return }
-            guard let file = q.ready.removeValue(forKey: q.next) else { return }   // still being made: fetch() calls back
-            q.playing = true
-            let last = q.next == q.ended - 1
+        let wanted = Set(parts)   // sentences guessed from a half-streamed answer that the final text dropped: skip them if not yet started
+        studioQueue = studioQueue.enumerated().filter { ($0.offset == 0 && studioBusy) || wanted.contains($0.element) }.map(\.element)
+        let clips = parts.map { studioClip($0) }
+        guard !clips.isEmpty else { studioPending = false; return fallback() }
+        func speakPart(_ i: Int) {
+            guard token == studioToken else { return }
+            guard i < clips.count else { studioPending = false; return }
+            let clip = clips[i]
+            guard clip.done else { clip.waiters.append { [weak self] _ in if self != nil { speakPart(i) } }; return }   // still being made: a gap
+            guard clip.ok else {
+                studioPending = false
+                if i == 0 { fallback() }   // nothing said yet: the Mac voice says it all
+                return   // a later failure: stop after what was already said
+            }
+            let last = i == clips.count - 1
             if last { studioPending = false }   // from here the playing voice itself keeps voice mode waiting
-            let player = Process(); player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); player.arguments = [file]
+            let player = Process(); player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); player.arguments = [clip.file]
             play(player, last: last) { [weak self] in
-                try? FileManager.default.removeItem(atPath: file)
                 guard let self, token == self.studioToken else { return }
-                q.playing = false; q.next += 1; pump()
+                speakPart(i + 1)
             }
         }
-        func fetch(_ i: Int) {
-            let file = NSTemporaryDirectory() + "friday-voice-\(token)-\(i).wav"
-            let p = studioRequest(parts[i], to: file), steps = studioSteps
-            let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
-            p.terminationHandler = { [weak self] proc in
-                let code = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                DispatchQueue.main.async {
-                    guard let self, token == self.studioToken else { try? FileManager.default.removeItem(atPath: file); return }   // stopped meanwhile
-                    self.studioFetch = nil
-                    let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? Int) ?? 0
-                    if code == "400" && steps && self.studioSteps {   // this engine has no num_step: ask again without it
-                        self.studioSteps = false; try? FileManager.default.removeItem(atPath: file); return fetch(i)
-                    }
-                    if code == "200" { self.studioLast = Date() }
-                    guard proc.terminationStatus == 0, code == "200", size > 1000 else {
-                        try? FileManager.default.removeItem(atPath: file)
-                        if proc.terminationStatus != 7 { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@)", proc.terminationStatus, code) }
-                        if i == 0 { self.studioPending = false; return fallback() }   // nothing said yet: the Mac voice says it all
-                        q.ended = i; if !q.playing { pump() }; return   // stop after what was already said
-                    }
-                    q.ready[i] = file
-                    if i + 1 < parts.count { fetch(i + 1) }
-                    pump()
-                }
-            }
-            do { try p.run(); studioFetch = p } catch { if i == 0 { studioPending = false; fallback() } else { q.ended = i; pump() } }
-        }
-        fetch(0)
+        speakPart(0)
     }
     func play(_ p: Process, last: Bool = true, done: @escaping () -> Void = {}) {   // the reply's voice: Esc and the hotkey stop it; voice mode listens again after the last part
         p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
@@ -2641,14 +2705,14 @@ final class App: NSObject, WKScriptMessageHandler {
         if talksBack && aloud { speak(a) }
     }
     func speak(_ a: String) {   // the custom VoiceStudio voice when it is running, else `say` with the best installed voice
-        stopWake(); shush()
+        stopWake(); shush(keepClips: true)   // sentences made while the answer streamed stay ready
         let words = spoken(a)
         let mac = { [weak self] in
             guard let self else { return }
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = readAloudArguments(words) { self.voiceQualityTip() }
             self.play(p)
         }
-        if Prefs.bool("voiceStudio") && !Prefs.str("voiceStudioName").isEmpty { studioSpeak(words, fallback: mac) } else { mac() }
+        if studioOn { studioSpeak(words, fallback: mac) } else { mac() }
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
     func clearPointContext() {
@@ -3517,7 +3581,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 return
             }
         }
-        if !dictate && !replying { warmStudio() }   // F.R.I.D.A.Y custom voice: load the model while the user talks
+        if !dictate && !replying { studioReset(); warmStudio() }   // F.R.I.D.A.Y custom voice: load the model while the user talks
         if !dictate && !quiet && !replying && Prefs.bool("voiceMode") { handsFree = true }   // F.R.I.D.A.Y voice mode: keep the conversation going after the answer
         toggleTalk = !clickTalk && !dictate && Prefs.str("talkMode") == "toggle"   // dictation locks with a double tap instead
         if !quiet { cue("soundStart") }
@@ -4210,7 +4274,10 @@ final class App: NSObject, WKScriptMessageHandler {
                         self.deliver(guided ? finish : result, aloud: !guided); continue   // after the line: finding the read-aloud voice must not delay the answer; a guide's steps speak for themselves
                     }
                     if line.hasPrefix("! ") { self.js("msg", String(line.dropFirst(2))) }
-                    else { self.js("line", line) }
+                    else {
+                        if line.hasPrefix("… ") && !guided { self.studioPrefetch(String(line.dropFirst(2)).replacingOccurrences(of: "\u{2028}", with: "\n")) }   // custom voice: start before the answer is done
+                        self.js("line", line)
+                    }
                 }
             }
         }
