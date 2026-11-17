@@ -1971,6 +1971,18 @@ class WatchAndBudgetTests(unittest.TestCase):
             self.assertIsNone(atticus.geocode('nowhereville ohio'))
         self.assertEqual(atticus.weather_place(atticus.plain("What's the weather going to be tomorrow in Strongsville, Ohio?")), 'strongsville ohio')
 
+    def test_lookups_fall_back_to_system_curl_without_certificates(self):   # F.R.I.D.A.Y: python.org Python before "Install Certificates"
+        cert = atticus.urllib.error.URLError('[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate')
+        done = __import__('types').SimpleNamespace(returncode=0, stdout=b'{"ok": 1}\nhttps://example.com/final', stderr=b'')
+        with patch.object(atticus.urllib.request, 'urlopen', side_effect=cert), patch.object(atticus.os.path, 'exists', return_value=True), \
+             patch.object(atticus.subprocess, 'run', return_value=done) as run:
+            self.assertEqual(atticus.get('https://example.com/x'), '{"ok": 1}')
+        self.assertEqual(run.call_args.args[0][0], '/usr/bin/curl')
+        with patch.object(atticus.urllib.request, 'urlopen', side_effect=atticus.urllib.error.URLError('offline')), \
+             patch.object(atticus.subprocess, 'run') as run:
+            with self.assertRaises(atticus.urllib.error.URLError): atticus.get('https://example.com/x')
+        run.assert_not_called()   # only certificate failures retry
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:

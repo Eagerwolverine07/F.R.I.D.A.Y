@@ -2398,6 +2398,20 @@ def look(cleanup=True, window=None):
     return shots
 
 
+def curl_get(url, timeout):
+    """macOS's own curl trusts the system keychain: the fallback when this Python has no certificates (python.org installs
+    until "Install Certificates" is run), which otherwise fails every https lookup quietly."""
+    try:
+        r = subprocess.run(['/usr/bin/curl', '-q', '--silent', '--show-error', '--fail', '--location', '--max-time', str(timeout),
+                            '-A', 'Mozilla/5.0 (Macintosh) AppleWebKit/605 Safari/605', '-w', '\n%{url_effective}', url],
+                           capture_output=True, timeout=timeout + 2)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise urllib.error.URLError(error)
+    if r.returncode: raise urllib.error.URLError(r.stderr.decode('utf-8', 'replace').strip() or f'curl exit {r.returncode}')
+    body, _, final = r.stdout.decode('utf-8', 'replace').rpartition('\n')
+    return body, final or url
+
+
 def get(url, timeout=10):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Macintosh) AppleWebKit/605 Safari/605'})
     try:
@@ -2405,8 +2419,13 @@ def get(url, timeout=10):
     except urllib.error.HTTPError as error:
         error.close()
         raise
-    with response:
-        body, final = response.read().decode('utf-8', 'replace'), response.geturl()
+    except urllib.error.URLError as error:   # F.R.I.D.A.Y: no certificates in this Python -> the system's curl
+        if 'CERTIFICATE' not in str(error).upper() or not os.path.exists('/usr/bin/curl'): raise
+        body, final = curl_get(url, timeout)
+        response = None
+    if response is not None:
+        with response:
+            body, final = response.read().decode('utf-8', 'replace'), response.geturl()
     if managed_agent():
         links = [urllib.parse.urljoin(final, html.unescape(link)) for link in re.findall(r'''(?i)\bhref\s*=\s*["']([^"'#]+)''', body[:1000000])]
         agent_url_observe(os.environ['ATTICUS_ASK'], [final, *links])
