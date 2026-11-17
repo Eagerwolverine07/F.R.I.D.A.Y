@@ -573,6 +573,10 @@ Saved workflow: follow and verify it; re-read stale context."""
 TEACH = """
 After failure, correction or a repeated ask, end [tip <exact words the user can say so it works next time>]."""
 
+# F.R.I.D.A.Y voice mode (on by default): spoken asks become a back-and-forth, so replies are written for the ear
+VOICE_MODE = """
+Voice mode: replies are read aloud and the user answers by voice. Talk like a sharp, warm friend: natural spoken sentences, contractions; no Markdown, lists, links or emoji; say numbers and symbols as spoken. Answer first in 1-3 short sentences; for long material give the gist and offer more. No filler or praise. At most one short follow-up question, only if it helps. Tagged replies and drawings keep their rules."""
+
 # Ask me when unsure (always on): a choices card in the box instead of a guess
 ASK_ME = f"""
 Ask, don't guess: unsure about anything that changes what you do (which file, app, song or person, which meaning, a missing detail)? Never choose
@@ -5489,7 +5493,8 @@ def system_prompt(risky):
         system = head + '\n' + AGENT_HANDOFF + rest
     return (system + (ASK_ME if pref('askMe', True) else '') +
             (DRAWING if pref('draw', True) else '') + (POINTER if pref('pointer', False) and not pref('draw', True) else '') + (LEARN_ME if pref('learnMe', True) else '') +
-            (TEACH if pref('tips', True) else '') + (WORKFLOW if pref('learn', True) else ''))
+            (TEACH if pref('tips', True) else '') + (WORKFLOW if pref('learn', True) else '') +
+            (VOICE_MODE if pref('voiceMode', True) and pref('input', 'voice') != 'type' else ''))
 
 
 def start_ai(model=None):
@@ -5504,7 +5509,7 @@ def start_claude(model=None, agent=None):
         return None
     system = system_prompt(ASK_FIRST if pref('safe', True) else NEVER)
     if agent:
-        for main_only in (AGENT_HANDOFF, DRAWING, POINTER, TEACH): system = system.replace(main_only, '')
+        for main_only in (AGENT_HANDOFF, DRAWING, POINTER, TEACH, VOICE_MODE): system = system.replace(main_only, '')
         system += AGENT_SYSTEM + ('\nPersonal tools are enabled.' if pref('agentUserTools', True) else '\nPersonal tools are disabled; do not request them.')
     settings = {}
     ask = agent['directory'] if agent else os.environ.get('ATTICUS_ASK') or tempfile.mkdtemp(prefix='atticus-ask-')   # keep helpers and focus restoration on the same ask

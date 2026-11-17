@@ -197,7 +197,7 @@ class DrawingTests(unittest.TestCase):
         installed = str(Path.home()/'Applications/Atticus.app/Contents/Resources/atticus.py')
         self.assertIn('--draw',prompt)
         self.assertIn('use ' + atticus.DRAW + ' once on Request screen unless user names another',prompt)
-        self.assertLessEqual(len(prompt.replace(atticus.ME,installed)),10050)   # +50 for the send-to-running-input rule (1.3.2)
+        self.assertLessEqual(len(prompt.replace(atticus.ME,installed)),10500)   # +50 for the send-to-running-input rule (1.3.2); +450 for F.R.I.D.A.Y voice mode
         self.assertIn('draw',atticus.switches())
         self.assertFalse(atticus.replayable(atticus.DRAW + " '{}'"))
 

@@ -194,7 +194,7 @@ enum Prefs {
             ["name": "Technical", "text": "Precise terms, numbers and how it works. Name the tradeoff."],
             ["name": "Friendly", "text": "Warm and conversational, like talking to a colleague. Simple words."]],
         "selection": true, "ahead": true, "aheadDelay": 0.7, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
-        "speak": false, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
+        "speak": false, "voiceMode": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "saveChats": true, "stats": true, "tips": true, "support": true, "comeBack": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "uiLanguage": "auto", "speechModel": "speech", "whisperModel": "turbo", "whisperLanguage": "auto", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420]
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
@@ -2300,6 +2300,10 @@ final class App: NSObject, WKScriptMessageHandler {
             ("onboarding", onboarding.win != nil), ("mic permission", AVCaptureDevice.authorizationStatus(for: .audio) != .authorized),
             ("speech permission", SFSpeechRecognizer.authorizationStatus() != .authorized)]
         let why = waits.first { $0.1 }?.0 ?? ""
+        // F.R.I.D.A.Y voice mode: the next turn of a conversation needs no wake word (the listen itself checks speech permission)
+        if handsFree && followUp && Prefs.bool("voiceMode"), !waits.contains(where: { $0.1 && $0.0 != "off" && $0.0 != "speech permission" }) {
+            followUp = false; stopWake(); clickMicrophone(quiet: true); return
+        }
         if why != wakeWhy { wakeWhy = why; NSLog("Wake word: %@", why.isEmpty ? "listening" : "waits (\(why))") }   // app.err shows why it is not listening
         guard why.isEmpty else {
             if wakeRequest != nil { stopWake() }; return
@@ -2511,7 +2515,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     func followUpSoon() {   // hands-free: listen again right when the done sound ends, not on the next 1 s tick
         guard followUp else { return }
-        if !Prefs.bool("speak") { js("quietListen", true) }   // show it with the done sound; the mic opens as the sound ends
+        if !talksBack { js("quietListen", true) }   // show it with the done sound; the mic opens as the sound ends
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, cueEnds.timeIntervalSinceNow) + 0.05) { [weak self] in self?.wakeTick() }
     }
     func cue(_ k: String) { let n = Prefs.str(k); if n != "None" { sound(n, Float(Prefs.num("volume"))) } }   // soundStart / soundRelease / soundDone / soundStop
@@ -2528,17 +2532,29 @@ final class App: NSObject, WKScriptMessageHandler {
         guard let v = voice else { return false }; voice = nil
         guard v.isRunning else { return false }; v.terminate(); return true
     }
+    var conversing: Bool { handsFree && Prefs.bool("voiceMode") }   // F.R.I.D.A.Y voice mode: a spoken back-and-forth
+    var talksBack: Bool { Prefs.bool("speak") || conversing }
+    // "bye", "that's all", "thanks, that's it": the conversation is over
+    static func isGoodbye(_ text: String) -> Bool {
+        let t = text.lowercased().replacingOccurrences(of: "’", with: "'").replacingOccurrences(of: #"[^a-z' ]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        let lead = #"^(?:(?:ok(?:ay)?|alright|great|cool|perfect|thanks|thank you|no|nope|nah|that's it|that's all) )*"#
+        let end = #"(?:bye(?: bye)?|goodbye|good night|see you(?: later)?|talk (?:to you )?later|that's all|that's it|that's all for now|that will be all|that'll be all|i'm done|we're done|nothing else|stop listening|end conversation)"#
+        return t.range(of: lead + end + #"(?: (?:thanks|thank you|friday|for now))*$"#, options: .regularExpression) != nil
+    }
     func deliver(_ a: String, aloud: Bool = true) {   // Settings: read answers aloud, copy them
         if Prefs.bool("autoCopy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(a, forType: .string) }
-        if Prefs.bool("speak") && aloud {
-            stopWake()
-            let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
-            shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = arguments
-            p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
-                guard let self, self.voice === p else { return }; self.voice = nil; self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
-            } }
-            try? p.run(); voice = p
-        }
+        if talksBack && aloud { speak(a) }
+    }
+    func speak(_ a: String) {   // `say`, with the best installed voice
+        stopWake()
+        let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
+        shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = arguments
+        p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
+            guard let self, self.voice === p else { return }; self.voice = nil; self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
+            self.followUpSoon()   // voice mode: listen again as soon as it stops talking
+        } }
+        try? p.run(); voice = p
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
     func clearPointContext() {
@@ -3135,7 +3151,7 @@ final class App: NSObject, WKScriptMessageHandler {
             if Date().timeIntervalSince(pausedNotice) > 4 { pausedNotice = Date(); js("paused"); show(); hide(after: 4) }
             return
         }
-        if shush() { return }
+        if shush() { if conversing && !busy { start() }; return }   // voice mode: cut in, then talk
         if quietFollowUp { hush() }
         if engine.isRunning { return toggleTalk ? stop() : dismiss() }
         if busy && !retryOffer && !drawing.active { return cancel() }
@@ -3407,6 +3423,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 return
             }
         }
+        if !dictate && !quiet && !replying && Prefs.bool("voiceMode") { handsFree = true }   // F.R.I.D.A.Y voice mode: keep the conversation going after the answer
         toggleTalk = !clickTalk && !dictate && Prefs.str("talkMode") == "toggle"   // dictation locks with a double tap instead
         if !quiet { cue("soundStart") }
         if !dictate && (!replying || drawingReply) { unwarm(); warm = spawn() }
@@ -3476,7 +3493,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 guard let self, listenID == listeningID, engine.isRunning, !whisperReleasing else { return t.invalidate() }
                 let f = (dictating ? dictateHotkey() : hotkey()).flags, held = Date().timeIntervalSince(began)
                 if clickTalk && text.isEmpty && held > 8 { t.invalidate(); if quietFollowUp { hush(); fadeIdleHandsFree(); return }; if offerText != nil { stopOfferInput(); return }; hush(); js("stopped", ""); return hide(after: 3) }   // nothing said: stop the mic quietly
-                if whisper && clickTalk && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && Date().timeIntervalSince(whisperVoice) >= 1.3 { t.invalidate(); return stop() }   // heard() is too late for the 1.3 s pause
+                if whisper && clickTalk && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && Date().timeIntervalSince(whisperVoice) >= endPause { t.invalidate(); return stop() }   // heard() is too late for the 1.3 s pause
                 if whisper { whisperTick(listeningID) }
                 else if dictating && held >= nextSpeechRollover { nextSpeechRollover += 50; rolloverSpeech(listeningID: listeningID) }
                 if !dictating && held > 60 { t.invalidate(); recordingLimit(); return }
@@ -3509,9 +3526,9 @@ final class App: NSObject, WKScriptMessageHandler {
             pause = item
             if let wait { DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: item) }
         }
-        if clickTalk && !whisperListen {   // no keys to let go of: a 1.3 s pause ends it (Whisper: the listen timer, on the audio)
+        if clickTalk && !whisperListen {   // no keys to let go of: a pause ends it (Whisper: the listen timer, on the audio)
             quiet?.cancel(); let q = DispatchWorkItem { [weak self] in self?.stop() }; quiet = q
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.3, execute: q)
+            DispatchQueue.main.asyncAfter(deadline: .now() + endPause, execute: q)
         }
         if !ahead.isEmpty && transcriptKey(rest()) != transcriptKey(ahead) { dropAhead() }   // the user kept talking: that start was for half a sentence
         aheadItem?.cancel()   // a longer pause = the user is probably done: start the AI now, keys still held
@@ -3520,6 +3537,7 @@ final class App: NSObject, WKScriptMessageHandler {
         aheadItem = go
         DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: go)
     }
+    var endPause: Double { conversing ? 2.0 : 1.3 }   // voice mode waits out a thinking pause
     // Whisper's live words trail the voice by about a second: wait out only what is left of the pause, and none while still talking.
     func pauseWait() -> Double? {
         guard whisperListen else { return Prefs.num("aheadDelay") }
@@ -3994,6 +4012,9 @@ final class App: NSObject, WKScriptMessageHandler {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [self] in if g == stops { finish() } }; return
         }
         aheadItem?.cancel()
+        if conversing && Self.isGoodbye(text) {   // voice mode: "bye" / "that's all" ends the conversation without asking the AI
+            close(clear: false); speak("Talk soon."); return
+        }
         if liveRevised {
             hush(); js("msg", "Your words changed after Atticus acted. Check them, then press Return.")
             pinned = true; panel.makeKey(); panel.makeFirstResponder(web); js("draft", text); return
