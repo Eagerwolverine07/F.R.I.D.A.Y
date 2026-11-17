@@ -23,7 +23,7 @@ class SwiftReviewFixTests(unittest.TestCase):
         self.assertIn('clickMicrophone(quiet: true)', wake)
         self.assertIn('guard Date() >= wakeRetry else { return }', wake)   # a backoff once pushed the retry back every tick, forever
         self.assertIn('("sound", cueSound?.isPlaying == true || Date() < cueEnds)', wake)
-        self.assertIn('("speaking", voice?.isRunning == true || drawing.voice?.isRunning == true)', wake)
+        self.assertIn('("speaking", voice?.isRunning == true || studioPending || drawing.voice?.isRunning == true)', wake)   # F.R.I.D.A.Y: a custom-voice reply being made counts as speaking
         self.assertIn('s?.duration ?? 0', self.swift)
         self.assertIn('if !self.quietFollowUp, let selection = self.selection', self.swift)
         start = self.swift.split('    func start(dictate: Bool, quiet: Bool = false)', 1)[1].split('    func heard(', 1)[0]

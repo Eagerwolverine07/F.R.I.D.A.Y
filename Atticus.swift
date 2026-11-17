@@ -194,7 +194,7 @@ enum Prefs {
             ["name": "Technical", "text": "Precise terms, numbers and how it works. Name the tradeoff."],
             ["name": "Friendly", "text": "Warm and conversational, like talking to a colleague. Simple words."]],
         "selection": true, "ahead": true, "aheadDelay": 0.7, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
-        "speak": false, "voiceMode": true, "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
+        "speak": false, "voiceMode": true, "voiceStudio": true, "voiceStudioVoice": "friday", "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "saveChats": true, "stats": true, "tips": true, "support": true, "comeBack": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "uiLanguage": "auto", "speechModel": "speech", "whisperModel": "turbo", "whisperLanguage": "auto", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420]
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
@@ -2296,7 +2296,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let waits: [(String, Bool)] = [("off", !Prefs.bool("wakeWord")), ("paused", Prefs.bool("paused")), ("asleep", wakeSleeping), ("inactive", wakeInactive),
             ("meeting", meeting.running), ("busy", busy), ("talking", engine.isRunning), ("dictating", dictating), ("typing", composing),
             ("shortcut", shortcutDown || dictateShortcutDown), ("box", panel.isVisible && !handsFree),
-            ("speaking", voice?.isRunning == true || drawing.voice?.isRunning == true), ("sound", cueSound?.isPlaying == true || Date() < cueEnds),
+            ("speaking", voice?.isRunning == true || studioPending || drawing.voice?.isRunning == true), ("sound", cueSound?.isPlaying == true || Date() < cueEnds),
             ("onboarding", onboarding.win != nil), ("mic permission", AVCaptureDevice.authorizationStatus(for: .audio) != .authorized),
             ("speech permission", SFSpeechRecognizer.authorizationStatus() != .authorized)]
         let why = waits.first { $0.1 }?.0 ?? ""
@@ -2529,8 +2529,47 @@ final class App: NSObject, WKScriptMessageHandler {
         show(); js("notice", "Voice sounds robotic? This Mac has no natural voice yet. Get one: System Settings → Accessibility → Read & Speak → System voice → Manage Voices → download an Enhanced or Premium voice, then pick it as the System voice."); hide(after: 14)
     }
     @discardableResult func shush() -> Bool {
-        guard let v = voice else { return false }; voice = nil
-        guard v.isRunning else { return false }; v.terminate(); return true
+        let pending = studioPending   // a custom-voice reply still being made counts as speaking
+        studioToken += 1; studioPending = false; studioFetch?.terminate(); studioFetch = nil
+        guard let v = voice else { return pending }; voice = nil
+        guard v.isRunning else { return pending }; v.terminate(); return true
+    }
+    // F.R.I.D.A.Y custom voice: VoiceStudio (github.com/debpalash/VoiceStudio) running on this Mac makes the audio in the
+    // voice named in Prefs "voiceStudioVoice"; anything wrong (not open, no such voice, an error) falls back to `say`.
+    var studioToken = 0, studioPending = false, studioFetch: Process?
+    func studioSpeak(_ words: String, fallback: @escaping () -> Void) {
+        studioToken += 1; let token = studioToken; studioPending = true
+        let file = NSTemporaryDirectory() + "friday-voice-\(token).wav"
+        let body = (try? JSONSerialization.data(withJSONObject: ["model": "voicestudio", "voice": Prefs.str("voiceStudioVoice"), "input": words, "response_format": "wav"]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        p.arguments = ["-q", "--silent", "--max-time", "30", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
+                       "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
+        let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { [weak self] proc in
+            let code = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            DispatchQueue.main.async {
+                guard let self, token == self.studioToken else { try? FileManager.default.removeItem(atPath: file); return }   // stopped meanwhile
+                self.studioPending = false; self.studioFetch = nil
+                let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? Int) ?? 0
+                guard proc.terminationStatus == 0, code == "200", size > 1000 else {
+                    try? FileManager.default.removeItem(atPath: file)
+                    if !(proc.terminationStatus == 7) { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@); using the Mac voice", proc.terminationStatus, code) }
+                    return fallback()
+                }
+                let player = Process(); player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay"); player.arguments = [file]
+                self.play(player) { try? FileManager.default.removeItem(atPath: file) }
+            }
+        }
+        do { try p.run(); studioFetch = p } catch { studioPending = false; fallback() }
+    }
+    func play(_ p: Process, done: @escaping () -> Void = {}) {   // the reply's voice: Esc and the hotkey stop it; voice mode listens again after it
+        p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
+            done()
+            guard let self, self.voice === p else { return }; self.voice = nil; self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
+            self.followUpSoon()   // voice mode: listen again as soon as it stops talking
+        } }
+        do { try p.run(); voice = p } catch { done() }
     }
     var conversing: Bool { handsFree && Prefs.bool("voiceMode") }   // F.R.I.D.A.Y voice mode: a spoken back-and-forth
     var talksBack: Bool { Prefs.bool("speak") || conversing }
@@ -2546,15 +2585,15 @@ final class App: NSObject, WKScriptMessageHandler {
         if Prefs.bool("autoCopy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(a, forType: .string) }
         if talksBack && aloud { speak(a) }
     }
-    func speak(_ a: String) {   // `say`, with the best installed voice
-        stopWake()
-        let arguments = readAloudArguments(spoken(a)) { voiceQualityTip() }
-        shush(); let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = arguments
-        p.terminationHandler = { [weak self] _ in DispatchQueue.main.async {
-            guard let self, self.voice === p else { return }; self.voice = nil; self.cueEnds = max(self.cueEnds, Date().addingTimeInterval(0.3)); self.hide(after: 2)
-            self.followUpSoon()   // voice mode: listen again as soon as it stops talking
-        } }
-        try? p.run(); voice = p
+    func speak(_ a: String) {   // the custom VoiceStudio voice when it is running, else `say` with the best installed voice
+        stopWake(); shush()
+        let words = spoken(a)
+        let mac = { [weak self] in
+            guard let self else { return }
+            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = readAloudArguments(words) { self.voiceQualityTip() }
+            self.play(p)
+        }
+        if Prefs.bool("voiceStudio") && !Prefs.str("voiceStudioVoice").isEmpty { studioSpeak(words, fallback: mac) } else { mac() }
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
     func clearPointContext() {
