@@ -1921,6 +1921,20 @@ class WatchAndBudgetTests(unittest.TestCase):
         self.assertTrue(out.startswith('Live forecast for Cleveland, Ohio'))
         self.assertIn('2026-11-17: high 45°F, low 36°F, light rain, 70%', out)
 
+    def test_plain_weather_questions_are_answered_instantly(self):   # F.R.I.D.A.Y
+        def fake(url, timeout=10):
+            if 'geocoding' in url:
+                return json.dumps({'results': [{'name': 'Boston', 'country_code': 'US', 'latitude': 42.36, 'longitude': -71.06}]})
+            return json.dumps({'current': {'temperature_2m': 41.3, 'weather_code': 2}, 'daily': {'time': ['2026-11-17', '2026-11-18'],
+                               'temperature_2m_max': [47.2, 50.1], 'temperature_2m_min': [37, 38.6], 'precipitation_probability_max': [10, 80], 'weather_code': [2, 61]}})
+        with patch.object(atticus, 'get', side_effect=fake):
+            self.assertEqual(atticus.fast_weather(atticus.plain("What's the weather like in Boston tomorrow?")),
+                             'Tomorrow in Boston: light rain, a high of 50 and a low of 39 degrees, with an 80% chance of rain.')
+            self.assertTrue(atticus.fast_weather(atticus.plain("How's the weather in Boston")).startswith("Right now in Boston it's 41 degrees"))
+            self.assertIsNone(atticus.fast_weather(atticus.plain('Write an email about the weather in Boston')))
+        with patch.object(atticus, 'get', side_effect=atticus.urllib.error.URLError('offline')):
+            self.assertIsNone(atticus.fast_weather(atticus.plain('weather in Boston tomorrow')))   # offline: the AI takes it
+
     def test_unwatch_tolerates_a_watcher_removing_its_own_marker(self):
         with tempfile.TemporaryDirectory() as root:
             marker = Path(root) / '123'

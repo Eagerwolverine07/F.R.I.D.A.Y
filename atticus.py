@@ -2188,6 +2188,9 @@ def fast(text):
     quick = fast_hands(t)
     if quick:
         return quick
+    if os.environ.get('ATTICUS_LIVE') != '1':   # F.R.I.D.A.Y: weather, instantly; mid-sentence it waits for the whole question
+        quick = fast_weather(t)
+        if quick: return quick
     m = re.fullmatch(r'remember how to (.+?)(?: for (?:the )?future)?', t)
     if m and pref('learn', True):
         if os.environ.get('ATTICUS_LIVE') == '1':
@@ -2422,25 +2425,38 @@ WEATHER_CODES = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'cloudy',
                  85: 'snow showers', 86: 'heavy snow showers', 95: 'thunderstorms', 96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
 
 
-def weather(q):
-    """F.R.I.D.A.Y: a weather ask gets a live forecast from Open-Meteo (free, no key) ahead of the web results; '' if no place or offline."""
+def weather_place(q):
+    """The place in a weather ask: "how's the weather in Cleveland tomorrow" -> "Cleveland"."""
     place = WEATHER_WORDS.sub(' ', q)
     place = re.sub(r"(?i)\b(what'?s|what|is|it|the|how|will|be|going|to|like|in|for|at|on|this|next|week|weekend|today|tonight|tomorrow|now|current|currently|"
                    r"hourly|daily|morning|afternoon|evening|night|outside|out|here|there|my|area|near|me|i|should|wear|bring|do|need|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|"
                    r"july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|\d+(st|nd|rd|th)?)\b|[^\w\s,'-]", ' ', place)
-    place = ' '.join(place.replace(',', ' ').split())
-    if not place: return ''
+    return ' '.join(place.replace(',', ' ').split())
+
+
+def weather_data(q, days=4):
+    """Open-Meteo (free, no key): (place name, US units?, forecast JSON), or None if no place or offline."""
+    place = weather_place(q)
+    if not place: return None
     try:
         found = json.loads(get('https://geocoding-api.open-meteo.com/v1/search?count=1&name=' + urllib.parse.quote(place), timeout=4)).get('results') or []
-        if not found: return ''
+        if not found: return None
         spot = found[0]
         us = spot.get('country_code') == 'US'
         data = json.loads(get('https://api.open-meteo.com/v1/forecast?' + urllib.parse.urlencode({
-            'latitude': spot['latitude'], 'longitude': spot['longitude'], 'timezone': 'auto', 'forecast_days': 4,
+            'latitude': spot['latitude'], 'longitude': spot['longitude'], 'timezone': 'auto', 'forecast_days': days,
             'current': 'temperature_2m,weather_code', 'daily': 'temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code',
             'temperature_unit': 'fahrenheit' if us else 'celsius', 'wind_speed_unit': 'mph' if us else 'kmh'}), timeout=4))
     except (OSError, ValueError, KeyError, TypeError):
-        return ''
+        return None
+    return spot, us, data
+
+
+def weather(q):
+    """F.R.I.D.A.Y: a weather ask gets a live forecast from Open-Meteo ahead of the web results; '' if no place or offline."""
+    found = weather_data(q)
+    if not found: return ''
+    spot, us, data = found
     unit = '°F' if us else '°C'
     name = ', '.join(filter(None, [spot.get('name'), spot.get('admin1'), spot.get('country')]))
     now, day = data.get('current') or {}, data.get('daily') or {}
@@ -2450,6 +2466,46 @@ def weather(q):
         lines.append(f'{date}: high {day["temperature_2m_max"][i]}{unit}, low {day["temperature_2m_min"][i]}{unit}, '
                      f'{WEATHER_CODES.get(day["weather_code"][i], "")}, {day["precipitation_probability_max"][i]}% chance of rain or snow')
     return '\n'.join(lines)
+
+
+WEEKDAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+
+
+def fast_weather(t):
+    """F.R.I.D.A.Y: a plain weather question is answered at once from Open-Meteo, Siri-short, with no AI and no web search.
+    None for anything else (a place-less ask, a weekend, an email about the weather) so the AI takes it."""
+    t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t)   # the wake word is not a weekday
+    if not WEATHER_WORDS.search(t) or len(t.split()) > 14: return None
+    if not re.match(r"(?:what|whats|what's|how|hows|how's|is|will|weather|forecast|tell me|give me|do i|should i|gonna|temperature|any)\b", t): return None
+    if re.search(r'\b(?:email|write|draft|text|message|remind|remember|calendar|weekend|week|hourly|history|average|last|yesterday)\b', t): return None
+    found = weather_data(t, days=7)
+    if not found: return None
+    spot, us, data = found
+    day, now = data.get('daily') or {}, data.get('current') or {}
+    dates = day.get('time') or []
+    if not dates: return None
+    deg = ' degrees' if us else '°C'
+    words = lambda code: WEATHER_CODES.get(code, 'mixed weather')
+    where = spot.get('name', 'there')
+    when = next((w for w in ('tomorrow', 'tonight', 'today') if re.search(rf'\b{w}\b', t)), None)
+    if when is None:
+        when = next((w for w in WEEKDAYS if re.search(rf'\b{w}\b', t)), None)
+    i = 1 if when == 'tomorrow' else 0
+    if when in WEEKDAYS:
+        i = next((n for n, d in enumerate(dates) if WEEKDAYS[datetime.strptime(d, '%Y-%m-%d').weekday()] == when), None)
+        if i is None: return None
+    try:
+        high, low, rain, code = round(day['temperature_2m_max'][i]), round(day['temperature_2m_min'][i]), day['precipitation_probability_max'][i] or 0, day['weather_code'][i]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    wet = 'snow' if code in (71, 73, 75, 77, 85, 86) else 'rain'
+    chance = f", with {'an' if str(rain).startswith('8') or rain in (11, 18) else 'a'} {rain}% chance of {wet}" if rain >= 30 else ''
+    if when in (None, 'today') and now.get('temperature_2m') is not None:
+        return f"Right now in {where} it's {round(now['temperature_2m'])}{deg} and {words(now.get('weather_code'))}, heading for a high of {high}{chance}."
+    if when == 'tonight':
+        return f"Tonight in {where}, {words(code)} with a low of {low}{deg}{chance}."
+    label = 'Tomorrow' if when == 'tomorrow' else when.capitalize() if when else 'Today'
+    return f"{label} in {where}: {words(code)}, a high of {high} and a low of {low}{deg}{chance}."
 
 
 def search(q):
