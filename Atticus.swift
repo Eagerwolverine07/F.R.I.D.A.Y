@@ -194,7 +194,7 @@ enum Prefs {
             ["name": "Technical", "text": "Precise terms, numbers and how it works. Name the tradeoff."],
             ["name": "Friendly", "text": "Warm and conversational, like talking to a colleague. Simple words."]],
         "selection": true, "ahead": true, "aheadDelay": 0.7, "live": true, "screen": "auto", "openOn": "here", "workIn": "back", "miniScreen": true, "draw": true, "guideSteps": "auto", "pageJS": false,
-        "speak": false, "voiceMode": true, "voiceStudio": true, "voiceStudioName": "Friday final", "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
+        "speak": false, "voiceMode": true, "voiceStudioOn": false, "voiceStudioName": "Friday final", "showAnswers": "stream", "autoCopy": false, "hideWhenSharing": true, "menuIcon": true, "autoUpdate": true,
         "learn": true, "safe": true, "pointer": false, "meeting": false, "meetingSave": true, "meetingAuto": "sure", "meetingNudge": false, "meetingDetect": true, "learnMe": true, "saveChats": true, "stats": true, "tips": true, "support": true, "comeBack": true, "askMe": true, "meetingSummary": true, "input": "voice", "talkMode": "hold", "uiLanguage": "auto", "speechModel": "speech", "whisperModel": "turbo", "whisperLanguage": "auto", "improve": false, "improveAsked": false, "draftInsert": "ask",
         "dictateHotkeyCode": -1, "dictateHotkeyMods": 0, "dictateHotkeyLabel": "", "dictateMode": "cleanup", "dictateHistory": true, "dictateLearn": true, "dictateWords": [], "dictateFixes": [String: String](), "boxW": 500, "boxH": 420]
     static let retiredKeys = ["quietAudio", "quietLevel", "autoCopy", "askMe", "corner", "linger", "soundStart", "soundRelease", "soundDone", "soundStop",
@@ -2545,7 +2545,7 @@ final class App: NSObject, WKScriptMessageHandler {
     var studioClips: [String: VoiceClip] = [:], studioQueue: [String] = [], studioRound = 0, studioBusy = false
     var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
     var studioVoiceID: String?, studioVoiceAt = Date.distantPast, studioNamesShown = ""
-    var studioOn: Bool { Prefs.bool("voiceStudio") && !Prefs.str("voiceStudioName").isEmpty }
+    var studioOn: Bool { Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
     static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
         var parts: [String] = [], current = ""
         for sentence in words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n") {
