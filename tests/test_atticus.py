@@ -1950,6 +1950,13 @@ class WatchAndBudgetTests(unittest.TestCase):
         with patch.object(atticus, 'get', return_value=json.dumps({'rates': {'USD': 108.34}})):
             self.assertEqual(q("What's 100 euros in dollars?"), '100 euros is about 108.3 US dollars.')
 
+    def test_quick_questions_started_early_still_get_the_instant_answer(self):   # F.R.I.D.A.Y: the wake word starts the AI before the sentence ends
+        self.assertTrue(atticus.quick_hint(atticus.plain("What's the weather going to be like in Boston tomorrow?")))
+        self.assertTrue(atticus.quick_hint('set a timer for 10 minutes'))
+        self.assertFalse(atticus.quick_hint('open my notes about the tokyo trip'))
+        source = Path(atticus.__file__).read_text()
+        self.assertIn("(hands_command(plain(task)) or quick_hint(plain(task)))", source)
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:

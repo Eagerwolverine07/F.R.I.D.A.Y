@@ -2852,6 +2852,17 @@ def quick_wiki(t):
     return first if 20 <= len(first) <= 400 else None
 
 
+QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
+                        r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
+                        r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
+                        r"what is|what's|whats|tell me about)\b|\d", re.I)
+
+
+def quick_hint(t):
+    """Could this be a quick answer? Then the ask waits for the finished sentence before trying one."""
+    return bool(QUICK_HINT.search(t))
+
+
 def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
@@ -8548,7 +8559,7 @@ def main():
     remembered = memory_items()   # the receipt under the answer shows what this ask changed
     commit = os.environ.get('ATTICUS_COMMIT')
     allow_focus(task)
-    if pref('instant', True) and hands_command(plain(task)):
+    if pref('instant', True) and (hands_command(plain(task)) or quick_hint(plain(task))):   # F.R.I.D.A.Y: quick answers wait for the finished sentence too
         if not wait_commit(): return
     quick = not marked and (not commit or os.path.exists(commit)) and pref('instant', True) and fast(remaining if remaining is not None else task)
     if quick:
