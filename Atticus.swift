@@ -2538,6 +2538,23 @@ final class App: NSObject, WKScriptMessageHandler {
     // voice named in Prefs "voiceStudioName" (default "Friday final"; names match case-insensitively). Model "tts-1" = VoiceStudio's active engine
     // ("voicestudio" is not an engine id and is rejected with HTTP 400). Anything wrong (not open, no such voice, an error) falls back to `say`.
     var studioToken = 0, studioPending = false, studioFetch: Process?
+    var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
+    func studioRequest(_ text: String, to file: String) -> Process {
+        var fields: [String: Any] = ["model": "tts-1", "voice": Prefs.str("voiceStudioName"), "input": text, "response_format": "wav"]
+        if studioSteps { fields["num_step"] = 8 }
+        let body = (try? JSONSerialization.data(withJSONObject: fields)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        p.arguments = ["-q", "--silent", "--max-time", "120", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
+                       "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
+        return p
+    }
+    // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
+    func warmStudio() {
+        guard Prefs.bool("voiceStudio"), !Prefs.str("voiceStudioName").isEmpty, Date().timeIntervalSince(studioLast) > 600 else { return }
+        studioLast = Date()
+        let p = studioRequest("Okay.", to: "/dev/null"); p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        try? p.run()
+    }
     final class VoiceQueue { var ready: [Int: String] = [:], next = 0, playing = false, ended: Int; init(_ count: Int) { ended = count } }
     // Sentence by sentence: the first plays while the next is made, so the voice starts after one short sentence, not the whole reply.
     static func voiceChunks(_ words: String) -> [String] {
@@ -2570,11 +2587,7 @@ final class App: NSObject, WKScriptMessageHandler {
         }
         func fetch(_ i: Int) {
             let file = NSTemporaryDirectory() + "friday-voice-\(token)-\(i).wav"
-            let body = (try? JSONSerialization.data(withJSONObject: ["model": "tts-1", "voice": Prefs.str("voiceStudioName"), "input": parts[i], "response_format": "wav"]))
-                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-            let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-            p.arguments = ["-q", "--silent", "--max-time", "30", "--connect-timeout", "1", "-o", file, "-w", "%{http_code}",
-                           "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3900/v1/audio/speech"]
+            let p = studioRequest(parts[i], to: file), steps = studioSteps
             let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
             p.terminationHandler = { [weak self] proc in
                 let code = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -2582,6 +2595,10 @@ final class App: NSObject, WKScriptMessageHandler {
                     guard let self, token == self.studioToken else { try? FileManager.default.removeItem(atPath: file); return }   // stopped meanwhile
                     self.studioFetch = nil
                     let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? Int) ?? 0
+                    if code == "400" && steps && self.studioSteps {   // this engine has no num_step: ask again without it
+                        self.studioSteps = false; try? FileManager.default.removeItem(atPath: file); return fetch(i)
+                    }
+                    if code == "200" { self.studioLast = Date() }
                     guard proc.terminationStatus == 0, code == "200", size > 1000 else {
                         try? FileManager.default.removeItem(atPath: file)
                         if proc.terminationStatus != 7 { NSLog("Custom voice: VoiceStudio failed (curl %d, HTTP %@)", proc.terminationStatus, code) }
@@ -3500,6 +3517,7 @@ final class App: NSObject, WKScriptMessageHandler {
                 return
             }
         }
+        if !dictate && !replying { warmStudio() }   // F.R.I.D.A.Y custom voice: load the model while the user talks
         if !dictate && !quiet && !replying && Prefs.bool("voiceMode") { handsFree = true }   // F.R.I.D.A.Y voice mode: keep the conversation going after the answer
         toggleTalk = !clickTalk && !dictate && Prefs.str("talkMode") == "toggle"   // dictation locks with a double tap instead
         if !quiet { cue("soundStart") }
