@@ -1907,6 +1907,20 @@ class WatchAndBudgetTests(unittest.TestCase):
             atticus.main()
         self.assertIn('use WebSearch', out.getvalue())
 
+    def test_weather_search_puts_a_live_forecast_first(self):   # F.R.I.D.A.Y
+        def fake(url, timeout=10):
+            if 'geocoding' in url:
+                self.assertIn('name=Cleveland', url)
+                return json.dumps({'results': [{'name': 'Cleveland', 'admin1': 'Ohio', 'country': 'United States', 'country_code': 'US', 'latitude': 41.5, 'longitude': -81.7}]})
+            if 'open-meteo' in url:
+                return json.dumps({'current': {'temperature_2m': 44, 'weather_code': 3}, 'daily': {'time': ['2026-11-17'], 'temperature_2m_max': [45],
+                                   'temperature_2m_min': [36], 'precipitation_probability_max': [70], 'weather_code': [61]}})
+            raise atticus.urllib.error.URLError('blocked')
+        with patch.object(atticus, 'get', side_effect=fake):
+            out = atticus.search('How is the weather going to be in Cleveland tomorrow?')
+        self.assertTrue(out.startswith('Live forecast for Cleveland, Ohio'))
+        self.assertIn('2026-11-17: high 45°F, low 36°F, light rain, 70%', out)
+
     def test_unwatch_tolerates_a_watcher_removing_its_own_marker(self):
         with tempfile.TemporaryDirectory() as root:
             marker = Path(root) / '123'
