@@ -1470,6 +1470,234 @@ def norm(name):
     return re.sub(r'[^a-z0-9]', '', ''.join(NUMS.get(w, w) for w in name.lower().split()))
 
 
+
+# ---- F.R.I.D.A.Y: Spotify connected directly through its Web API ----
+# The user's own Spotify developer app (Development Mode, Premium), signed in once with PKCE (no client secret). Tokens live
+# in DIR/spotify.json (0600) and refresh themselves. Anything that fails falls back to the web-search + AppleScript path.
+SPOTIFY = os.path.join(DIR, 'spotify.json')
+SPOTIFY_PORT = 43821
+SPOTIFY_REDIRECT = f'http://127.0.0.1:{SPOTIFY_PORT}/callback'
+SPOTIFY_SCOPES = ('user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read '
+                  'playlist-read-private playlist-read-collaborative user-read-private')
+
+
+class SpotifyError(Exception):
+    def __init__(self, status, detail=''):
+        super().__init__(f'Spotify answered {status}: {detail}'.strip(': ')); self.status = status
+
+
+def http_json(url, method='GET', data=None, headers=None, form=False, timeout=10):
+    """JSON over https (None for an empty body). Python without certificates falls back to macOS curl, as get() does."""
+    body, hdrs = None, dict(headers or {})
+    if data is not None:
+        body = (urllib.parse.urlencode(data) if form else json.dumps(data)).encode()
+        hdrs['Content-Type'] = 'application/x-www-form-urlencoded' if form else 'application/json'
+    elif method in ('PUT', 'POST'):
+        hdrs['Content-Length'] = '0'
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=body, method=method, headers=hdrs), timeout=timeout) as r:
+            raw = r.read().decode('utf-8', 'replace')
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode('utf-8', 'replace')[:300]; e.close()
+        raise SpotifyError(e.code, detail)
+    except urllib.error.URLError as e:
+        if 'CERTIFICATE' not in str(e).upper() or not os.path.exists('/usr/bin/curl'): raise
+        args = ['/usr/bin/curl', '-q', '--silent', '--show-error', '--max-time', str(timeout), '-X', method, '-w', '\n%{http_code}']
+        for k, v in hdrs.items(): args += ['-H', f'{k}: {v}']
+        if body is not None: args += ['--data-binary', body.decode()]
+        r = subprocess.run(args + [url], capture_output=True, timeout=timeout + 2)
+        if r.returncode: raise urllib.error.URLError(r.stderr.decode('utf-8', 'replace').strip()[:200] or f'curl exit {r.returncode}')
+        raw, _, code = r.stdout.decode('utf-8', 'replace').rpartition('\n')
+        if not code.isdigit() or int(code) >= 400: raise SpotifyError(int(code) if code.isdigit() else 0, raw[:300])
+    return json.loads(raw) if raw.strip() else None
+
+
+def spotify_tokens():
+    try:
+        with open(SPOTIFY) as f: data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def spotify_connected():
+    return bool(spotify_tokens().get('refresh_token'))
+
+
+def spotify_save(tokens, answer):
+    tokens = {**tokens, 'access_token': answer['access_token'], 'expires_at': time.time() + int(answer.get('expires_in', 3600))}
+    if answer.get('refresh_token'): tokens['refresh_token'] = answer['refresh_token']   # Spotify may rotate it
+    os.makedirs(DIR, exist_ok=True); private_json(SPOTIFY, tokens)
+    return tokens
+
+
+def spotify_token(force=False):
+    tokens = spotify_tokens()
+    if not tokens.get('refresh_token'): raise SpotifyError(401, 'Spotify is not connected')
+    if not force and tokens.get('access_token') and tokens.get('expires_at', 0) > time.time() + 60: return tokens['access_token']
+    answer = http_json('https://accounts.spotify.com/api/token', 'POST', {'grant_type': 'refresh_token', 'refresh_token': tokens['refresh_token'],
+                                                                        'client_id': tokens['client_id']}, form=True)
+    return spotify_save(tokens, answer)['access_token']
+
+
+def spotify_api(method, path, data=None, query=None):
+    url = 'https://api.spotify.com/v1' + path + ('?' + urllib.parse.urlencode(query) if query else '')
+    for attempt in (0, 1):
+        try: return http_json(url, method, data, {'Authorization': 'Bearer ' + spotify_token(force=bool(attempt))})
+        except SpotifyError as e:
+            if e.status != 401 or attempt: raise
+
+
+def spotify_connect(client_id=''):
+    """--spotify-connect [client id]: sign in once in the browser (PKCE); prints and speaks the outcome."""
+    import http.server, secrets
+    client_id = (client_id or spotify_tokens().get('client_id') or '').strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{32}', client_id): return 'That is not a Spotify Client ID: it has 32 letters and numbers.'
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+    state, got = secrets.token_urlsafe(16), {}
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+            if urllib.parse.urlparse(self.path).path == '/callback' and query.get('state') == state: got.update(query)
+            self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.end_headers()
+            done = 'code' in got
+            self.wfile.write(('<html><body style="font:16px -apple-system;margin:4em;text-align:center">' +
+                              ('Spotify is connected to F.R.I.D.A.Y. You can close this tab.' if done else 'Spotify was not connected. You can close this tab.') +
+                              '</body></html>').encode())
+        def log_message(self, *_): pass
+    try: server = http.server.HTTPServer(('127.0.0.1', SPOTIFY_PORT), Callback)
+    except OSError: return 'Could not start the Spotify sign-in: something else is using its port. Try again in a minute.'
+    server.timeout = 1
+    subprocess.run(['open', 'https://accounts.spotify.com/authorize?' + urllib.parse.urlencode({
+        'client_id': client_id, 'response_type': 'code', 'redirect_uri': SPOTIFY_REDIRECT, 'scope': SPOTIFY_SCOPES,
+        'code_challenge_method': 'S256', 'code_challenge': challenge, 'state': state})])
+    ends = time.time() + 300
+    while not got and time.time() < ends: server.handle_request()
+    server.server_close()
+    if 'code' not in got:
+        return 'Spotify was not connected: ' + (got.get('error', '').replace('_', ' ') or 'the sign-in page timed out') + '.'
+    try:
+        answer = http_json('https://accounts.spotify.com/api/token', 'POST', {'grant_type': 'authorization_code', 'code': got['code'],
+                           'redirect_uri': SPOTIFY_REDIRECT, 'client_id': client_id, 'code_verifier': verifier}, form=True)
+        spotify_save({'client_id': client_id}, answer)
+        me = spotify_api('GET', '/me') or {}
+        tokens = spotify_tokens(); tokens['user'] = me.get('id', ''); private_json(SPOTIFY, tokens)
+    except (SpotifyError, OSError, ValueError, KeyError) as e:
+        return f'Spotify was not connected: {e}'
+    return 'Spotify is connected' + (f' as {me["display_name"]}' if me.get('display_name') else '') + '.'
+
+
+def spotify_playlists():
+    """The user's own and followed playlists (name, uri), cached ten minutes."""
+    path = os.path.join(DIR, 'spotify-playlists.json')
+    try:
+        if time.time() - os.path.getmtime(path) < 600:
+            with open(path) as f: return json.load(f)
+    except (OSError, ValueError): pass
+    rows, offset = [], 0
+    while offset < 500:
+        page = spotify_api('GET', '/me/playlists', query={'limit': 50, 'offset': offset}) or {}
+        rows += [{'name': p['name'], 'uri': p['uri']} for p in page.get('items') or [] if p and p.get('name') and p.get('uri')]
+        if not page.get('next'): break
+        offset += 50
+    private_json(path, rows)
+    return rows
+
+
+LIKED = re.compile(r"(?:my |the )?(?:liked|saved|favou?rite|loved) (?:songs|tracks|music)|(?:my )?likes|my library", re.I)
+
+
+def spotify_find(name, anything=True, exact=False, kinds=('track', 'artist', 'album', 'playlist')):
+    """(uri, title) from Spotify itself: Liked Songs and the user's playlists first, then Spotify's own search."""
+    asked = name.strip().rstrip('.!?')
+    if 'track' not in kinds or len(kinds) > 1:
+        if LIKED.fullmatch(asked):
+            user = spotify_tokens().get('user') or (spotify_api('GET', '/me') or {}).get('id', '')
+            if user: return f'spotify:user:{user}:collection', 'your Liked Songs'
+        key = norm(re.sub(r'^(?:my|the) ', '', asked, flags=re.I))
+        hit = next((p for p in spotify_playlists() if norm(p['name']) == key), None)
+        if hit: return hit['uri'], hit['name']
+        if not anything: return None
+    wanted = next((k for k in kinds if re.search(rf'\b{k}\b', asked, re.I)), None)   # "the album Lover"
+    query = re.sub(r'\b(?:the )?(?:song|track|album|artist|playlist)\b', ' ', asked, flags=re.I).strip() if wanted else asked
+    found = spotify_api('GET', '/search', query={'q': query, 'type': ','.join([wanted] if wanted else kinds), 'limit': 5}) or {}
+    def title(kind, item):
+        by = (item.get('artists') or [{}])[0].get('name', '') if kind in ('track', 'album') else ''
+        return item.get('name', '') + (f' by {by}' if by else '')
+    key = norm(query)
+    order = [wanted] if wanted else list(kinds)
+    for kind in order:   # an exact name ("Lover", "Lover by Taylor Swift") wins, in this order
+        for item in (found.get(kind + 's') or {}).get('items') or []:
+            if item and key in (norm(item.get('name', '')), norm(title(kind, item))): return item['uri'], title(kind, item)
+    if exact and not wanted: return None
+    for kind in order:   # else Spotify's own best match
+        top = next((i for i in (found.get(kind + 's') or {}).get('items') or [] if i), None)
+        if top: return top['uri'], title(kind, top)
+    return None
+
+
+def spotify_device(launch=True):
+    """The device to play on: the active one, else this Mac (opening Spotify in the background if needed)."""
+    for attempt in range(16 if launch else 1):
+        devices = (spotify_api('GET', '/me/player/devices') or {}).get('devices') or []
+        device = next((d for d in devices if d.get('is_active')), None) or next((d for d in devices if d.get('type') == 'Computer'), None)
+        if device: return device
+        if attempt == 0 and launch: subprocess.run(['open', '-g', '-a', 'Spotify'], capture_output=True)
+        time.sleep(.5)
+    raise SpotifyError(404, 'no Spotify device is open')
+
+
+def spotify_play(uri):
+    device = spotify_device()
+    body = {'uris': [uri]} if uri.startswith('spotify:track:') else {'context_uri': uri}
+    spotify_api('PUT', '/me/player/play', body, {'device_id': device['id']})
+    return device
+
+
+def spotify_quick(t):
+    """Voice commands that need the account: connect, what's playing, move playback to another device."""
+    if re.fullmatch(r"(?:connect|link)(?: to)?(?: my)? spotify(?: account)?|(?:sign|log) ?in(?:to| to) spotify", t):
+        client_id = spotify_tokens().get('client_id', '')
+        if not client_id:
+            try: copied = subprocess.run(['pbpaste'], capture_output=True, text=True, timeout=3).stdout.strip().lower()
+            except (OSError, subprocess.TimeoutExpired): copied = ''
+            if not re.fullmatch(r'[0-9a-f]{32}', copied):
+                return 'Copy your Client ID from your app on developer.spotify.com first, then say connect Spotify again.'
+            client_id = copied
+        script = f'{shlex.quote(sys.executable)} {shlex.quote(ME)} --spotify-connect {client_id}'
+        subprocess.Popen(['/bin/sh', '-c', f'r=$({script}); osascript -e "display notification \\"$r\\" with title \\"F.R.I.D.A.Y\\""; say "$r"'],
+                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        fast.cmds = []
+        return 'Opening Spotify’s sign-in page. Click Agree there.'
+    if re.fullmatch(r'(?:disconnect|unlink)(?: my)? spotify|(?:sign|log) ?out of spotify', t):
+        for path in (SPOTIFY, os.path.join(DIR, 'spotify-playlists.json')):
+            try: os.remove(path)
+            except OSError: pass
+        return 'Spotify is disconnected.'
+    if not spotify_connected(): return None
+    if re.fullmatch(r"what(?:'s| is) (?:playing|this song|the song)(?: now| right now)?(?: on spotify)?|what song is (?:this|playing)|who(?:'s| is) (?:singing|playing) (?:this|right now)", t):
+        now = spotify_api('GET', '/me/player/currently-playing') or {}
+        item = now.get('item') or {}
+        if not item: return 'Nothing is playing on Spotify.'
+        by = ', '.join(a.get('name', '') for a in item.get('artists') or [])
+        return f"{'Playing' if now.get('is_playing') else 'Paused on'} {item.get('name', '')}" + (f' by {by}' if by else '') + '.'
+    m = re.fullmatch(r'(?:play|move|switch|transfer|continue|put)(?: (?:it|this|that|the music|music|spotify|playback|the song|the audio))? (?:on|to|over to) (?:my |the )?(.+?)(?: instead)?', t)
+    if m and m[1] not in ('spotify', 'repeat', 'shuffle', 'loop'):
+        place = m[1]
+        kind = next((k for words, k in ((('phone', 'iphone', 'mobile'), 'Smartphone'), (('speaker', 'homepod', 'echo', 'sonos'), 'Speaker'),
+                                        (('tv', 'television'), 'TV'), (('mac', 'macbook', 'laptop', 'computer'), 'Computer'), (('ipad', 'tablet'), 'Tablet'))
+                     if any(w in place.split() for w in words)), None)
+        devices = (spotify_api('GET', '/me/player/devices') or {}).get('devices') or []
+        device = (next((d for d in devices if norm(place) and norm(place) in norm(d.get('name', ''))), None) or
+                  next((d for d in devices if kind and d.get('type') == kind), None))
+        if not device:
+            return f'I can’t see your {place} in Spotify. Open Spotify on it, then ask again.' if kind or devices else None
+        spotify_api('PUT', '/me/player', {'device_ids': [device['id']], 'play': True})
+        return f"Playing on {device.get('name', place)}."
+    return None
+
+
 def playlist(name):
     """(uri, title) of a playlist in the user's Spotify app's cache whose title matches, else None."""
     names, fresh = {}, False
@@ -1561,6 +1789,15 @@ def spotify_item(name, anything=True, exact=False):
 
 def play(name, anything=True):
     """Play the user's playlist by that name; else (anything=True) the top Spotify song, album or artist for it from the web."""
+    if spotify_connected():   # F.R.I.D.A.Y: the account's own search, library and player; any failure falls back below
+        try:
+            found = spotify_find(name, anything)
+            if found:
+                device = spotify_play(found[0])
+                return f'Playing {on_spotify(found[1])}' + ('' if device.get('type') == 'Computer' else f" on {device.get('name', 'your device')}") + '.'
+            if not anything: return None
+        except (SpotifyError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+            pass   # fall back to the web-search path below
     p = spotify_item(name, anything)
     if not p: return None
     mine = osa('tell application "System Events" to get name of first process whose frontmost is true')
@@ -1632,6 +1869,15 @@ def _spotify_verified(text, m, title='', action=False):
 
 def queue(name):
     """Add one resolved Spotify track through its accessible controls without leaving Spotify in front."""
+    if spotify_connected():   # F.R.I.D.A.Y: straight into the account's queue
+        try:
+            found = spotify_find(name, kinds=('track',))
+            if found:
+                device = spotify_device()
+                spotify_api('POST', '/me/player/queue', query={'uri': found[0], 'device_id': device['id']})
+                return f'Added {found[1]} to your Spotify queue.'
+        except (SpotifyError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+            pass   # fall back to the clicking path below
     try:
         p = spotify_item(name, exact=True)
     except (OSError, RuntimeError) as e:
@@ -2895,7 +3141,7 @@ def quick_wiki(t):
     if not m: return None
     topic = next(x for x in m.groups() if x).strip()
     words, exact = topic.split(), not (m[1] or m[3] and len(topic.split()) > 1)   # people may have middle names; a thing must be its article's exact title
-    if topic in ('up', 'new', 'going on', 'happening', 'wrong', 'good', 'next', 'left', 'love', 'life', 'yourself', 'you', 'that', 'this', 'it', 'he', 'she', 'they', 'there', 'here'):
+    if topic in ('playing', 'this song', 'up', 'new', 'going on', 'happening', 'wrong', 'good', 'next', 'left', 'love', 'life', 'yourself', 'you', 'that', 'this', 'it', 'he', 'she', 'they', 'there', 'here'):
         return None
     if not 1 <= len(words) <= 4 or re.search(r"\b(?:the|of|my|your|it|this|that|these|those|you|i|me|in|on|for|to|current|now|today|best|price|ceo|president|weather|time|date)\b|\d", topic):
         return None
@@ -2916,7 +3162,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -2959,7 +3205,7 @@ def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
@@ -8495,6 +8741,8 @@ def main():
         return print(reply or 'No matching Spotify result in web search; this does not search your full private library.')
     if args[:1] == ['--queue']:
         return print(queue(' '.join(args[1:])))
+    if args[:1] == ['--spotify-connect']:   # F.R.I.D.A.Y: one-time browser sign-in, started by "connect Spotify"
+        return print(spotify_connect(args[1] if len(args) > 1 else ''))
     if args == ['--state']:   # the Settings window: usage, saved rules, Claude plan
         rows = [r for r in read_rows(os.path.join(DIR, 'log.jsonl')) if r.get('status') not in ('not_handled', 'cancelled') and isinstance(r.get('at'), str) and
                 (r.get('usd', 0) is None or isinstance(r.get('usd', 0), (int, float))) and isinstance(r.get('secs', 0), (int, float))]

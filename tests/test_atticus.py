@@ -2000,6 +2000,43 @@ class WatchAndBudgetTests(unittest.TestCase):
             self.assertIsNone(atticus.quick_answer(atticus.plain('How can I track my package?')))
             self.assertIn('not in the Clock app', atticus.timer_context())
 
+    def test_spotify_connected_plays_and_queues_through_the_api(self):   # F.R.I.D.A.Y: Spotify Web API first, web search as the fallback
+        calls = []
+        search = {'tracks': {'items': [{'name': 'Lover', 'uri': 'spotify:track:t1', 'artists': [{'name': 'Taylor Swift'}]}]},
+                  'artists': {'items': [{'name': 'Taylor Swift', 'uri': 'spotify:artist:a1'}]}, 'albums': {'items': [None]}, 'playlists': {'items': [None]}}
+        def api(method, path, data=None, query=None):
+            calls.append((method, path, data, query))
+            if path == '/search': return search
+            if path == '/me/playlists': return {'items': [{'name': 'Gym Mix', 'uri': 'spotify:playlist:p1'}], 'next': None}
+            if path == '/me/player/devices': return {'devices': [{'id': 'mac', 'name': 'MacBook', 'type': 'Computer', 'is_active': False},
+                                                                 {'id': 'ph', 'name': 'iPhone', 'type': 'Smartphone', 'is_active': False}]}
+            return None
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
+             patch.object(atticus, 'SPOTIFY', os.path.join(root, 'spotify.json')), patch.object(atticus, 'spotify_api', side_effect=api):
+            atticus.private_json(atticus.SPOTIFY, {'client_id': 'c' * 32, 'refresh_token': 'r', 'user': 'amber'})
+            self.assertEqual(atticus.play('Taylor Swift'), 'Playing Taylor Swift on Spotify.')
+            self.assertIn(('PUT', '/me/player/play', {'context_uri': 'spotify:artist:a1'}, {'device_id': 'mac'}), calls)
+            self.assertEqual(atticus.play('lover by taylor swift'), 'Playing Lover by Taylor Swift on Spotify.')
+            self.assertEqual(atticus.play('my gym mix', anything=False), 'Playing Gym Mix on Spotify.')
+            self.assertEqual(atticus.play('liked songs', anything=False), 'Playing your Liked Songs on Spotify.')
+            self.assertIn(('PUT', '/me/player/play', {'context_uri': 'spotify:user:amber:collection'}, {'device_id': 'mac'}), calls)
+            self.assertEqual(atticus.queue('lover'), 'Added Lover by Taylor Swift to your Spotify queue.')
+            self.assertEqual(atticus.quick_answer(atticus.plain('Play it on my phone')), 'Playing on iPhone.')
+            self.assertIn(('PUT', '/me/player', {'device_ids': ['ph'], 'play': True}, None), calls)
+
+    def test_connect_spotify_needs_a_copied_client_id(self):   # F.R.I.D.A.Y
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), patch.object(atticus, 'SPOTIFY', os.path.join(root, 'spotify.json')), \
+             patch.object(atticus.subprocess, 'run', return_value=__import__('types').SimpleNamespace(stdout='not an id', returncode=0)), \
+             patch.object(atticus.subprocess, 'Popen') as popen:
+            self.assertTrue(atticus.quick_answer('connect spotify').startswith('Copy your Client ID'))
+            popen.assert_not_called()
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), patch.object(atticus, 'SPOTIFY', os.path.join(root, 'spotify.json')), \
+             patch.object(atticus.subprocess, 'run', return_value=__import__('types').SimpleNamespace(stdout='0123456789abcdef0123456789abcdef', returncode=0)), \
+             patch.object(atticus.subprocess, 'Popen') as popen:
+            self.assertTrue(atticus.quick_answer('connect spotify').startswith('Opening Spotify'))
+            self.assertIn('--spotify-connect 0123456789abcdef0123456789abcdef', popen.call_args.args[0][2])
+            self.assertTrue(popen.call_args.kwargs['start_new_session'])
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:
