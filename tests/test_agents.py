@@ -188,7 +188,7 @@ class AgentTests(unittest.TestCase):
         for draw in (False,True):   # Drawings off swaps DRAWING for POINTER: both must fit
             self.prefs.update(draw=draw,pointer=True,askMe=True,learnMe=True,tips=True,learn=True)
             prompt=atticus.system_prompt(atticus.ASK_FIRST)
-            self.assertLessEqual(len(prompt.replace(atticus.ME,installed)),10600)   # same cap as test_screen_draw; +550 for F.R.I.D.A.Y voice mode and search rules
+            self.assertLessEqual(len(prompt.replace(atticus.ME,installed)),10700)   # same cap as test_screen_draw; +650 for F.R.I.D.A.Y voice mode, search and Spotify rules
         self.assertIn('(--look if none)',atticus.POINTER)
         self.assertLess(prompt.index(atticus.AGENT_HANDOFF),250);self.assertEqual(prompt.count(atticus.AGENT_HANDOFF),1)
 

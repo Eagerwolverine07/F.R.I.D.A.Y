@@ -543,7 +543,7 @@ Tools:
 - Files (if needed): mdfind -name "<words>" | head -20; content: mdfind -onlyin ~/Documents "<words>" | head.
 - Installed CLIs: use attached help; verify destination content. Prompt sends: JSON accepted/queued + Enter means sent; never retry for an unseen turn start. Confirm in one short line. Blocked files: read the app window; change permissions only when a tool asks.
 - Personal data: {shlex.quote(ME)} --me <category>|find "<words>". Categories: basics, contact, places, school_work, links, preferences, people, notes. Forget a found fact: --me drop <id> "<exact user words>". People: --contacts "<name/relationship>" or the app address book; missing/ambiguous: choices, never guess. Calendar (any language): --calendar --help for JSON list/add/move/delete; always use it (picks ambiguous events, confirms edits).
-- Spotify: {PLAY} "<name>" plays; {QUEUE} "<track>" queues.
+- Spotify: {PLAY} "<name>" plays; {QUEUE} "<track>" queues; {ME} --spotify-link [ID] links.
 - Past asks: {HISTORY} "<words or date>". Past meetings: {shlex.quote(ME)} --meeting-history "<words, weekday or date>".
 - Watch: {WATCH} "<app>" "<window title words>" <gone|shows|settled> "<phrase>" ["<then request>"], or {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]. No AI until done. Stop: {shlex.quote(ME)} --unwatch.
 - Routines: {ROUTINE} add time HH:MM daily|weekdays "<ask>" [mode] | add interval SECONDS "<ask>" [mode] | list | remove listed-ID.
@@ -629,7 +629,7 @@ RISKY = [('Delete something?', r'\b(rm|rmdir|srm|unlink|shred|trash|mv)\s|\bdele
 RISKY_LABEL = r"(?i)\b(buy|purchase|pay|payment|checkout|order|send|delete|remove|trash|submit|publish|post|sign.?out|log.?out|unsubscribe|subscribe|transfer|bid|erase|withdraw|donate|authorize|grant access|allow access|logout|book|reserve|merge|deploy|discard|wipe|format|apply(?! filters| changes| settings| coupon| code| promo| discount| theme| style| formatting)|confirm)\b"
 RUNS = ('.command', '.tool', '.terminal', '.sh', '.zsh', '.bash', '.app', '.workflow', '.action')   # macOS runs these when opened
 APP_DIRS = ('/Applications/', '/System/Applications/', os.path.join(HOME, 'Applications') + '/')
-QUIET = (DRAW, SEARCH, READ, LOOK, FRONT, SHOW, PLACE, PLAY, QUEUE, TYPE, REMEMBER, FORGET, ABOUT, PICK, SET, WEB, HISTORY, HANDS, WINDOW, f'{shlex.quote(ME)} --calendar ', 'open ', 'mdfind ', 'pbpaste')   # helpers confirm their own risky actions
+QUIET = (DRAW, SEARCH, READ, LOOK, FRONT, SHOW, PLACE, PLAY, QUEUE, TYPE, REMEMBER, FORGET, ABOUT, PICK, SET, WEB, HISTORY, HANDS, WINDOW, f'{shlex.quote(ME)} --calendar ', f'{shlex.quote(ME)} --spotify-link', 'open ', 'mdfind ', 'pbpaste')   # helpers confirm their own risky actions
 
 
 def launches_program(part):
@@ -1655,21 +1655,32 @@ def spotify_play(uri):
     return device
 
 
+SPOTIFY_ID = re.compile(r'\b[0-9a-f]{32}\b', re.I)
+
+
+def spotify_link(text=''):
+    """Start the one-time sign-in in the background: the Client ID from the words, else the clipboard, else the saved one.
+    The browser sign-in can take minutes, so it runs detached and announces the outcome itself."""
+    found = SPOTIFY_ID.search(text or '')
+    client_id = found[0].lower() if found else ''
+    if not client_id:
+        try: copied = subprocess.run(['pbpaste'], capture_output=True, text=True, timeout=3).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired): copied = ''
+        client_id = copied.lower() if re.fullmatch(r'[0-9a-fA-F]{32}', copied) else spotify_tokens().get('client_id', '')
+    if not client_id:
+        return 'Copy your Client ID from your app on developer.spotify.com first, then say connect Spotify again.'
+    script = f'{shlex.quote(sys.executable)} {shlex.quote(ME)} --spotify-connect {client_id}'
+    subprocess.Popen(['/bin/sh', '-c', f'r=$({script}); osascript -e "display notification \\"$r\\" with title \\"F.R.I.D.A.Y\\""; say "$r"'],
+                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 'Opening Spotify’s sign-in page. Click Agree there.'
+
+
 def spotify_quick(t):
     """Voice commands that need the account: connect, what's playing, move playback to another device."""
-    if re.fullmatch(r"(?:connect|link)(?: to)?(?: my)? spotify(?: account)?|(?:sign|log) ?in(?:to| to) spotify", t):
-        client_id = spotify_tokens().get('client_id', '')
-        if not client_id:
-            try: copied = subprocess.run(['pbpaste'], capture_output=True, text=True, timeout=3).stdout.strip().lower()
-            except (OSError, subprocess.TimeoutExpired): copied = ''
-            if not re.fullmatch(r'[0-9a-f]{32}', copied):
-                return 'Copy your Client ID from your app on developer.spotify.com first, then say connect Spotify again.'
-            client_id = copied
-        script = f'{shlex.quote(sys.executable)} {shlex.quote(ME)} --spotify-connect {client_id}'
-        subprocess.Popen(['/bin/sh', '-c', f'r=$({script}); osascript -e "display notification \\"$r\\" with title \\"F.R.I.D.A.Y\\""; say "$r"'],
-                         start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if (re.search(r'\bspotify\b', t) and re.search(r'\b(?:connect|link|set ?up|hook ?up|sign ?in|log ?in|login|authori[sz]e|pair|integrate)\b', t)
+            and not re.search(r'\b(?:play|queue|pause|skip|disconnect|unlink|out)\b', t)) or (SPOTIFY_ID.search(t) and 'spotify' in t):
         fast.cmds = []
-        return 'Opening Spotify’s sign-in page. Click Agree there.'
+        return spotify_link(t)
     if re.fullmatch(r'(?:disconnect|unlink)(?: my)? spotify|(?:sign|log) ?out of spotify', t):
         for path in (SPOTIFY, os.path.join(DIR, 'spotify-playlists.json')):
             try: os.remove(path)
@@ -8741,6 +8752,8 @@ def main():
         return print(reply or 'No matching Spotify result in web search; this does not search your full private library.')
     if args[:1] == ['--queue']:
         return print(queue(' '.join(args[1:])))
+    if args[:1] == ['--spotify-link']:   # the AI's way in: returns at once, the sign-in runs in the background
+        return print(spotify_link(' '.join(args[1:])))
     if args[:1] == ['--spotify-connect']:   # F.R.I.D.A.Y: one-time browser sign-in, started by "connect Spotify"
         return print(spotify_connect(args[1] if len(args) > 1 else ''))
     if args == ['--state']:   # the Settings window: usage, saved rules, Claude plan

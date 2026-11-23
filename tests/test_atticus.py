@@ -2037,6 +2037,21 @@ class WatchAndBudgetTests(unittest.TestCase):
             self.assertIn('--spotify-connect 0123456789abcdef0123456789abcdef', popen.call_args.args[0][2])
             self.assertTrue(popen.call_args.kwargs['start_new_session'])
 
+    def test_connect_spotify_understands_other_phrasings_and_an_id_in_the_words(self):   # F.R.I.D.A.Y
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), patch.object(atticus, 'SPOTIFY', os.path.join(root, 'spotify.json')), \
+             patch.object(atticus.subprocess, 'run', return_value=__import__('types').SimpleNamespace(stdout='', returncode=0)), \
+             patch.object(atticus.subprocess, 'Popen') as popen:
+            for words in ('Link my Spotify account', 'set up spotify', 'can you connect to my spotify',
+                          'connect spotify with client id 0123456789ABCDEF0123456789abcdef'):
+                popen.reset_mock()
+                reply = atticus.quick_answer(atticus.plain(words))
+                if 'client id' in words:
+                    self.assertTrue(reply.startswith('Opening Spotify'), words)
+                    self.assertIn('--spotify-connect 0123456789abcdef0123456789abcdef', popen.call_args.args[0][2])
+                else:
+                    self.assertTrue(reply.startswith('Copy your Client ID'), words)
+            self.assertIsNone(atticus.quick_answer(atticus.plain('play my spotify playlist')))
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:
