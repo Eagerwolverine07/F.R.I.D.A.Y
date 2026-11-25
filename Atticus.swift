@@ -2498,6 +2498,10 @@ final class App: NSObject, WKScriptMessageHandler {
         var seen = Set<String>()
         var all = DictationData.words
         all.append("Atticus")
+        // F.R.I.D.A.Y: names it kept mishearing — the wake word, its own name, Spotify and the user's playlists
+        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs"]
+        let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
+        all += lists.compactMap { $0["name"] as? String }.prefix(40)
         all.append(profileName(config + "/me.json"))
         all.append(contentsOf: shortcuts.keys.sorted())
         let appDirs = [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"]
