@@ -3434,6 +3434,40 @@ def news_stop():
     except (OSError, ValueError): return False
 
 
+def news_page(title, script, used, quotes, failed):
+    """The briefing as a page to read along: paragraphs, a market table, clickable sources. Light and dark mode."""
+    e = html.escape
+    paragraphs = ''.join(f'<p>{e(p.strip())}</p>' for p in re.split(r'\n\s*\n|(?<=[.!?])\n', script) if p.strip())
+    rows = ''.join(f'<tr><td>{e(q["name"])}</td><td>{q["price"]:,}</td><td class="{"up" if q["change_pct"] >= 0 else "down"}">'
+                   f'{"▲" if q["change_pct"] >= 0 else "▼"} {abs(q["change_pct"]):.2f}%</td></tr>' for q in quotes if q.get('change_pct') is not None)
+    links = ''.join(f'<li><span>{e(r["source"])}</span> <a href="{e(r["link"])}">{e(r["title"])}</a></li>'
+                    for r in used if str(r.get('link', '')).startswith(('https://', 'http://')))
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+            f'<title>{e(title)}</title><style>'
+            ':root{color-scheme:light dark;--fg:#1d1d1f;--muted:#6e6e73;--bg:#fbfbfd;--card:#fff;--line:#e5e5ea;--up:#1a7f37;--down:#c4302b}'
+            '@media(prefers-color-scheme:dark){:root{--fg:#f5f5f7;--muted:#a1a1a6;--bg:#161618;--card:#1f1f22;--line:#333;--up:#3fb950;--down:#f85149}}'
+            'body{margin:0;background:var(--bg);color:var(--fg);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}'
+            'main{max-width:680px;margin:0 auto;padding:48px 24px 64px}h1{font-size:30px;line-height:1.2;margin:0 0 4px}'
+            '.when{color:var(--muted);margin:0 0 32px}h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:40px 0 12px}'
+            'p{margin:0 0 18px}table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:16px}'
+            'td{padding:10px 14px;border-top:1px solid var(--line)}tr:first-child td{border-top:0}td:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}'
+            '.up{color:var(--up)}.down{color:var(--down)}ul{list-style:none;padding:0;margin:0;font-size:16px}li{padding:8px 0;border-top:1px solid var(--line)}'
+            'li span{color:var(--muted);margin-right:6px}a{color:inherit}.note{color:var(--muted);font-size:15px;margin-top:32px}'
+            '</style></head><body><main>'
+            f'<h1>Your news briefing</h1><p class="when">{e(title)}</p>{paragraphs}'
+            + (f'<h2>Markets</h2><table>{rows}</table>' if rows else '') + (f'<h2>Sources</h2><ul>{links}</ul>' if links else '')
+            + (f'<p class="note">Could not reach: {e(", ".join(failed))}.</p>' if failed else '') + '</main></body></html>')
+
+
+def news_latest():
+    """The newest saved briefing page (or its text file, for briefings from before pages existed)."""
+    if not os.path.isdir(NEWS_DIR): return ''
+    files = sorted(f for f in os.listdir(NEWS_DIR) if f.endswith('.md'))
+    if not files: return ''
+    page = os.path.join(NEWS_DIR, files[-1][:-3] + '.html')
+    return page if os.path.exists(page) else os.path.join(NEWS_DIR, files[-1])
+
+
 def newsroom(speak=True, now=None):
     """--newsroom: gather, write, save, notify, speak. Returns the saved file's path."""
     gathered = news_gather(now)
@@ -3452,10 +3486,14 @@ def newsroom(speak=True, now=None):
         f.write(f'# Newsroom, {stamp.strftime("%A, %B %-d, %Y, %-I:%M %p")}\n\n' + '\n\n'.join(script.split('\n\n')) +
                 (f'\n\n## Markets\n{markets}' if markets else '') + (f'\n\n## Sources\n{sources}' if sources else '') +
                 (f'\n\nCould not reach: {", ".join(gathered["failed"])}.' if gathered['failed'] else '') + '\n')
+    page = path[:-3] + '.html'
+    with open(page, 'w') as f:
+        f.write(news_page(stamp.strftime('%A, %B %-d, %Y, %-I:%M %p'), script, used, gathered['quotes'], gathered['failed']))
     for old in sorted(f for f in os.listdir(NEWS_DIR) if f.endswith('.md'))[:-60]:   # keep two months
-        try: os.remove(os.path.join(NEWS_DIR, old))
-        except OSError: pass
-    subprocess.run(['osascript', '-e', 'display notification "Your news briefing is ready. Say \\"show my briefing\\" to read it." with title "F.R.I.D.A.Y Newsroom"'], capture_output=True)
+        for name in (old, old[:-3] + '.html'):
+            try: os.remove(os.path.join(NEWS_DIR, name))
+            except OSError: pass
+    subprocess.run(['open', page], capture_output=True)   # read along while it's spoken
     if speak: news_spoken(news_speak(script))
     return path
 
@@ -3499,10 +3537,10 @@ def quick_news(t):
             with open(os.path.join(NEWS_DIR, 'stopped.json')) as f: recent = time.time() - float(json.load(f)) < 60
         except (OSError, ValueError, TypeError): recent = False
         return 'Stopped.' if recent else None
-    if re.fullmatch(r'(?:show|open|display)(?: me)? (?:my |the |today\'s |todays |last )?(?:news )?briefing', t):
-        files = sorted(f for f in os.listdir(NEWS_DIR) if f.endswith('.md')) if os.path.isdir(NEWS_DIR) else []
-        if not files: return 'There’s no briefing yet. Say "brief me" to make one.'
-        subprocess.run(['open', '-e', os.path.join(NEWS_DIR, files[-1])], capture_output=True)
+    if re.fullmatch(r'(?:show|open|display|let me read|i want to read|read)(?: me)? (?:(?:my|the|today\'s|todays|last|latest) ){0,2}(?:news )?briefing(?: again)?', t):
+        latest = news_latest()
+        if not latest: return 'There’s no briefing yet. Say "brief me" to make one.'
+        subprocess.run(['open'] + (['-e'] if latest.endswith('.md') else []) + [latest], capture_output=True)
         return 'Here’s your latest briefing.'
     m = re.fullmatch(r'(?:brief me|(?:run|schedule|give me|play)(?: my| the)? (?:news )?(?:briefing|newsroom))(?: every (?:day|morning|weekday))? at (\d{1,2})(?::?(\d{2}))? ?(am|pm|a m|p m)?(?: every (?:day|morning))?', t)
     if m and int(m[1]) <= 23:

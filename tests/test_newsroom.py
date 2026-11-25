@@ -164,6 +164,23 @@ class VoiceTests(unittest.TestCase):
         self.assertIn('stopBriefing()', shush)
         self.assertIn('newsroom/speaking.pid', swift)
 
+    def test_page_is_readable_and_safe(self):
+        page = a.news_page('Tuesday', 'Good morning.\n\nBBC reports <b>talks</b>.', [
+            {'source': 'BBC', 'title': 'Talks & more', 'link': 'https://bbc.test/1'},
+            {'source': 'Bad', 'title': 'x', 'link': 'javascript:alert(1)'}],
+            [{'name': 'S&P 500', 'price': 6000.5, 'change_pct': -0.42}], ['CNBC'])
+        self.assertIn('<p>Good morning.</p>', page); self.assertIn('&lt;b&gt;talks&lt;/b&gt;', page)
+        self.assertIn('href="https://bbc.test/1"', page); self.assertNotIn('javascript:', page)
+        self.assertIn('▼ 0.42%', page); self.assertIn('Could not reach: CNBC', page)
+
+    def test_show_opens_the_page(self):
+        for name in ('2026-11-24-0900.md', '2026-11-24-0900.html'):
+            open(os.path.join(self.dir, name), 'w').close()
+        for phrase in ('show my briefing', 'let me read the briefing', 'open the latest briefing'):
+            with mock.patch.object(a.subprocess, 'run') as run:
+                self.assertIn('latest briefing', a.quick_news(phrase), phrase)
+            self.assertEqual(run.call_args[0][0], ['open', os.path.join(self.dir, '2026-11-24-0900.html')])
+
 
 if __name__ == '__main__':
     unittest.main()
