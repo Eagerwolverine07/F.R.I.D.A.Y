@@ -209,6 +209,21 @@ class VoiceTests(unittest.TestCase):
             self.assertIn(piece, body)
         self.assertIn('"friday.briefing"', swift); self.assertIn('["--briefing"]', swift)
 
+    def test_filler_words_around_the_command(self):
+        for phrase in ('brief me okay', 'okay brief me', 'friday brief me please', 'can you brief me now', 'so give me the news thanks'):
+            with mock.patch.object(a.subprocess, 'Popen'):
+                self.assertIn('briefing together', a.quick_news(phrase), phrase)
+
+    def test_saved_newsroom_agent_runs_the_briefing(self):
+        with mock.patch.object(a, 'named_agents', return_value=[{'name': 'Newsroom', 'brief': 'news'}]), mock.patch.object(a.subprocess, 'Popen') as popen:
+            out = a.named_agent_action({'action': 'run', 'name': 'Newsroom'})
+        self.assertIn('briefing together', out['reply']); self.assertIn('--newsroom', popen.call_args[0][0])
+
+    def test_saved_agent_without_task_does_its_job(self):
+        with mock.patch.object(a, 'named_agents', return_value=[{'name': 'Inbox', 'brief': 'Sort my mail'}]):
+            out = a.named_agent_action({'action': 'run', 'name': 'Inbox'})
+        self.assertIn('usual job', out['handoff']['brief'])
+
 
 if __name__ == '__main__':
     unittest.main()

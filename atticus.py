@@ -3548,6 +3548,8 @@ def news_unschedule():
 
 def quick_news(t):
     """Newsroom by voice: run, stop, show, schedule, and standing rules."""
+    t = re.sub(r"^(?:(?:ok|okay|so|um|uh|hey|friday|please|can you|could you|would you|will you)\s+)+", '', t)   # "okay friday brief me please"
+    t = re.sub(r"(?:\s+(?:ok|okay|please|now|friday|thanks|thank you|right now))+$", '', t).strip()
     if re.fullmatch(r"(?:brief me|(?:give me |read me |play )?(?:my |the |a |today's |todays )?(?:morning |daily |news )?(?:news )?briefing|run (?:the )?newsroom|"
                     r"(?:what's|whats|what is) (?:happening|going on) in the world(?: today)?|(?:give me |tell me )?(?:the |today's |todays )?(?:news|headlines)(?: today)?|catch me up(?: on the news)?)", t):
         subprocess.Popen(['/bin/sh', ME, '--newsroom'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -5587,7 +5589,10 @@ def named_agent_action(data):
         rows.remove(found); save_named_agents(rows)
         return {'reply': f'Deleted {found["name"]}.'}
     task = ' '.join(data.get('task', '').split())[:2000] if isinstance(data.get('task'), str) else ''
-    if not task: return {'reply': f'What should {found["name"]} work on?'}
+    if re.search(r'news ?room|briefing', found['name'], re.I):   # F.R.I.D.A.Y: the Newsroom has its own runner, not a chat agent
+        subprocess.Popen(['/bin/sh', ME, '--newsroom'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return {'reply': 'Putting your briefing together. It takes about a minute.'}
+    if not task: task = 'Do your usual job now, as described above.'   # F.R.I.D.A.Y: "run X" alone means its standing job, not a question
     paths = ([f'Folder: {found["folder"]}'] if found.get('folder') else []) + ([f'Files: {json.dumps(found["files"], ensure_ascii=False)}'] if found.get('files') else [])
     brief = found['brief'] + '\nCurrent task: ' + task + (('\n' + '\n'.join(paths)) if paths else '')
     return {'handoff': {'title': found['name'], 'brief': brief, 'named': found['name'], 'folder': found.get('folder', ''),
