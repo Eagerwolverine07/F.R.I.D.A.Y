@@ -3468,13 +3468,35 @@ def news_latest():
     return page if os.path.exists(page) else os.path.join(NEWS_DIR, files[-1])
 
 
+def news_in_app(text, script='', wait=3.0):
+    """Hand the briefing to the running F.R.I.D.A.Y app: it shows in the box and, given a script, is read aloud there.
+    True once the app took it; False when the app isn't running (the caller falls back)."""
+    os.makedirs(NEWS_DIR, exist_ok=True)
+    ready = os.path.join(NEWS_DIR, 'ready.json')
+    try: os.remove(ready + '.shown')
+    except OSError: pass
+    private_json(ready, {'text': text, 'script': script})
+    try: subprocess.run([APP, '--briefing'], capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError): pass
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if os.path.exists(ready + '.shown'):
+            try: os.remove(ready + '.shown')
+            except OSError: pass
+            return True
+        time.sleep(0.1)
+    try: os.remove(ready)
+    except OSError: pass
+    return False
+
+
 def newsroom(speak=True, now=None):
     """--newsroom: gather, write, save, notify, speak. Returns the saved file's path."""
     gathered = news_gather(now)
     if not any(gathered['sections'].values()):
         message = 'I couldn’t reach any news sources, so there’s no briefing right now. Check the internet connection.'
         subprocess.run(['osascript', '-e', f'display notification {json.dumps(message)} with title "F.R.I.D.A.Y Newsroom"'], capture_output=True)
-        if speak: news_spoken(news_speak(message))
+        if speak and not news_in_app(message, message): news_spoken(news_speak(message))
         return ''
     script, used = news_write(gathered, now=now)
     stamp = datetime.fromtimestamp(now or time.time())
@@ -3493,7 +3515,9 @@ def newsroom(speak=True, now=None):
         for name in (old, old[:-3] + '.html'):
             try: os.remove(os.path.join(NEWS_DIR, name))
             except OSError: pass
-    subprocess.run(['open', page], capture_output=True)   # read along while it's spoken
+    with open(path) as f: text = f.read()
+    if news_in_app(text, script if speak else ''): return path   # shown in F.R.I.D.A.Y's box and read there
+    subprocess.run(['open', page], capture_output=True)   # the app isn't running: a page to read along instead
     if speak: news_spoken(news_speak(script))
     return path
 
@@ -3540,6 +3564,10 @@ def quick_news(t):
     if re.fullmatch(r'(?:show|open|display|let me read|i want to read|read)(?: me)? (?:(?:my|the|today\'s|todays|last|latest) ){0,2}(?:news )?briefing(?: again)?', t):
         latest = news_latest()
         if not latest: return 'There’s no briefing yet. Say "brief me" to make one.'
+        md = latest[:-5] + '.md' if latest.endswith('.html') else latest
+        if os.environ.get('ATTICUS_UI') == '1' and os.path.exists(md):   # asked in the app: the box shows it once this short answer lands
+            subprocess.Popen(['/bin/sh', ME, '--newsroom-show', md], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return 'Here’s your latest briefing.'
         subprocess.run(['open'] + (['-e'] if latest.endswith('.md') else []) + [latest], capture_output=True)
         return 'Here’s your latest briefing.'
     m = re.fullmatch(r'(?:brief me|(?:run|schedule|give me|play)(?: my| the)? (?:news )?(?:briefing|newsroom))(?: every (?:day|morning|weekday))? at (\d{1,2})(?::?(\d{2}))? ?(am|pm|a m|p m)?(?: every (?:day|morning))?', t)
@@ -9121,6 +9149,11 @@ def main():
         return print(queue(' '.join(args[1:])))
     if args[:1] == ['--newsroom']:   # F.R.I.D.A.Y: the spoken briefing ("brief me", or the daily LaunchAgent)
         return print(newsroom() or 'No briefing.')
+    if args[:1] == ['--newsroom-show'] and len(args) > 1:   # after "show my briefing": wait for that short answer, then fill the box
+        time.sleep(1.5)
+        with open(args[1]) as f: text = f.read()
+        if not news_in_app(text): subprocess.run(['open', args[1][:-3] + '.html' if os.path.exists(args[1][:-3] + '.html') else args[1]], capture_output=True)
+        return
     if args[:1] == ['--newsroom-test']:
         return newsroom_test(args[1] if len(args) > 1 else os.path.expanduser('~/Downloads/friday-newsroom-test.txt'))
     if args[:1] == ['--spotify-link']:   # the AI's way in: returns at once, the sign-in runs in the background

@@ -128,6 +128,12 @@ class VoiceTests(unittest.TestCase):
         self.assertIn('skip sports', a.quick_news('what are my briefing rules'))
         a.quick_news('clear my briefing rules'); self.assertEqual(a.news_rules(), [])
 
+    def test_show_in_app_uses_the_box(self):
+        open(os.path.join(self.dir, '2026-11-24-0900.md'), 'w').close()
+        with mock.patch.object(a.subprocess, 'Popen') as popen, mock.patch.dict(os.environ, {'ATTICUS_UI': '1'}):
+            self.assertIn('latest briefing', a.quick_news('show my briefing'))
+        self.assertEqual(popen.call_args[0][0][-2:], ['--newsroom-show', os.path.join(self.dir, '2026-11-24-0900.md')])
+
     def test_show_without_briefing(self):
         self.assertIn('no briefing yet', a.quick_news('show my briefing'))
 
@@ -177,9 +183,31 @@ class VoiceTests(unittest.TestCase):
         for name in ('2026-11-24-0900.md', '2026-11-24-0900.html'):
             open(os.path.join(self.dir, name), 'w').close()
         for phrase in ('show my briefing', 'let me read the briefing', 'open the latest briefing'):
-            with mock.patch.object(a.subprocess, 'run') as run:
+            with mock.patch.object(a.subprocess, 'run') as run, mock.patch.dict(os.environ, {'ATTICUS_UI': ''}):
                 self.assertIn('latest briefing', a.quick_news(phrase), phrase)
             self.assertEqual(run.call_args[0][0], ['open', os.path.join(self.dir, '2026-11-24-0900.html')])
+
+    def test_app_takes_the_briefing(self):
+        def app_shows(cmd, **kw):   # the running app reads ready.json and leaves the .shown mark
+            ready = os.path.join(self.dir, 'ready.json')
+            self.assertEqual(json.load(open(ready)), {'text': '# Hi', 'script': 'Hello'})
+            os.remove(ready); open(ready + '.shown', 'w').close()
+        with mock.patch.object(a.subprocess, 'run', side_effect=app_shows) as run:
+            self.assertTrue(a.news_in_app('# Hi', 'Hello'))
+        self.assertEqual(run.call_args[0][0], [a.APP, '--briefing'])
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'ready.json.shown')))
+
+    def test_no_app_falls_back(self):
+        with mock.patch.object(a.subprocess, 'run'):
+            self.assertFalse(a.news_in_app('# Hi', 'Hello', wait=0.3))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'ready.json')))
+
+    def test_swift_shows_and_reads_in_the_box(self):
+        swift = open(os.path.join(os.path.dirname(__file__), '..', 'Atticus.swift')).read()
+        body = swift[swift.index('func showBriefing()'):swift.index('func stopBriefing')]
+        for piece in ('newsroom/ready.json', '.shown', 'pinned = true', 'js("line", answer)', 'speak(script)'):
+            self.assertIn(piece, body)
+        self.assertIn('"friday.briefing"', swift); self.assertIn('["--briefing"]', swift)
 
 
 if __name__ == '__main__':

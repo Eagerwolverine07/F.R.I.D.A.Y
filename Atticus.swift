@@ -2542,6 +2542,22 @@ final class App: NSObject, WKScriptMessageHandler {
         guard let v = voice else { return pending || briefing }; voice = nil
         guard v.isRunning else { return pending || briefing }; v.terminate(); return true
     }
+    // F.R.I.D.A.Y Newsroom: atticus.py --newsroom leaves {"text": markdown, "script": words to read} in newsroom/ready.json and
+    // posts friday.briefing. The briefing shows in the box (it stays until ✕ or Esc) and is read in F.R.I.D.A.Y's own voice, so the
+    // hotkey, Esc and the wake word stop it like any reply. An empty script only shows it ("show my briefing").
+    func showBriefing() {
+        let file = (Prefs.path as NSString).deletingLastPathComponent + "/newsroom/ready.json"
+        guard let data = FileManager.default.contents(atPath: file),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let text = j["text"] as? String, !text.isEmpty else { return }
+        try? FileManager.default.removeItem(atPath: file)
+        try? "shown".write(toFile: file + ".shown", atomically: true, encoding: .utf8)   // tells atticus.py not to fall back to a browser
+        let script = j["script"] as? String ?? ""
+        if !script.isEmpty { hush(); shush() }
+        show(); pinned = true
+        js("listen", true); js("words", "News briefing"); js("think")   // its own turn in the box, labelled like a question
+        answer = "✓ " + text; js("line", answer)
+        if !script.isEmpty { speak(script) }
+    }
     // F.R.I.D.A.Y Newsroom: the briefing is read by its own `say` (atticus.py --newsroom writes its pid and removes it when done),
     // so every way of cutting F.R.I.D.A.Y off — the hotkey, Esc, the wake word, a new question — stops the briefing too.
     func stopBriefing() -> Bool {
@@ -2955,6 +2971,9 @@ final class App: NSObject, WKScriptMessageHandler {
         }
         NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] e in
             if e.type != .keyDown || e.modifierFlags.contains(.command) { self?.userSwitch = Date() }   // a click or ⌘-Tab: the user is choosing
+        }
+        DistributedNotificationCenter.default().addObserver(forName: .init("friday.briefing"), object: nil, queue: .main) { [weak self] _ in
+            self?.showBriefing()   // F.R.I.D.A.Y Newsroom: the object is ignored; only the app's own newsroom/ready.json is read
         }
         DistributedNotificationCenter.default().addObserver(forName: .init("atticus.raise"), object: nil, queue: .main) { [weak self] n in
             self?.allowUntil = Date().addingTimeInterval(3)   // hands raise an app for a mouse click, then put the user's app back
@@ -8416,6 +8435,9 @@ if CommandLine.arguments.dropFirst() == ["--system-ui"] {
 }
 if CommandLine.arguments == [CommandLine.arguments[0], "--raise"] || CommandLine.arguments == [CommandLine.arguments[0], "--raise", "user"] {
     DistributedNotificationCenter.default().postNotificationName(.init("atticus.raise"), object: CommandLine.arguments.count == 3 ? "user" : nil, deliverImmediately: true); usleep(50_000); exit(0)
+}
+if CommandLine.arguments.dropFirst() == ["--briefing"] {   // F.R.I.D.A.Y Newsroom: tell the running app a briefing is ready
+    DistributedNotificationCenter.default().postNotificationName(.init("friday.briefing"), object: nil, deliverImmediately: true); usleep(50_000); exit(0)
 }
 if CommandLine.arguments.dropFirst() == ["--calendar"] {
     let result: [String: Any]
