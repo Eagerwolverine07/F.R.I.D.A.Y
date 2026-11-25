@@ -3193,7 +3193,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3414,13 +3414,33 @@ def news_speak(script):
     return p
 
 
+def news_spoken(p):
+    """Wait for the reading to end; clear its pid, and note when it was cut off so a plain "stop" right after gets a short answer."""
+    code = p.wait(); pid_file = os.path.join(NEWS_DIR, 'speaking.pid')
+    try:
+        with open(pid_file) as f: mine = f.read().strip() == str(p.pid)
+        if mine: os.remove(pid_file)
+    except OSError: pass
+    if code: private_json(os.path.join(NEWS_DIR, 'stopped.json'), time.time())
+
+
+def news_stop():
+    """Stop a briefing being read now. True if one was."""
+    pid_file = os.path.join(NEWS_DIR, 'speaking.pid')
+    try:
+        with open(pid_file) as f: pid = int(f.read().strip())
+        os.remove(pid_file)
+        os.killpg(pid, signal.SIGTERM); return True
+    except (OSError, ValueError): return False
+
+
 def newsroom(speak=True, now=None):
     """--newsroom: gather, write, save, notify, speak. Returns the saved file's path."""
     gathered = news_gather(now)
     if not any(gathered['sections'].values()):
         message = 'I couldn’t reach any news sources, so there’s no briefing right now. Check the internet connection.'
         subprocess.run(['osascript', '-e', f'display notification {json.dumps(message)} with title "F.R.I.D.A.Y Newsroom"'], capture_output=True)
-        if speak: news_speak(message)
+        if speak: news_spoken(news_speak(message))
         return ''
     script, used = news_write(gathered, now=now)
     stamp = datetime.fromtimestamp(now or time.time())
@@ -3436,7 +3456,7 @@ def newsroom(speak=True, now=None):
         try: os.remove(os.path.join(NEWS_DIR, old))
         except OSError: pass
     subprocess.run(['osascript', '-e', 'display notification "Your news briefing is ready. Say \\"show my briefing\\" to read it." with title "F.R.I.D.A.Y Newsroom"'], capture_output=True)
-    if speak: news_speak(script)
+    if speak: news_spoken(news_speak(script))
     return path
 
 
@@ -3471,11 +3491,14 @@ def quick_news(t):
         subprocess.Popen(['/bin/sh', ME, '--newsroom'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         fast.cmds = []
         return 'Putting your briefing together. It takes about a minute.'
-    if re.fullmatch(r'(?:stop|end|cancel|quiet|shut up)(?: the| my)? (?:news )?(?:briefing|news|newsroom)', t):
+    if re.fullmatch(r'(?:stop|end|cancel|quiet|shut up|pause)(?: reading)?(?: the| my)? (?:news )?(?:briefing|news|newsroom)', t):
+        news_stop(); return 'Stopped.'
+    if re.fullmatch(r"(?:ok |okay )?(?:stop|stop it|stop talking|stop reading|enough|that's enough|thats enough|be quiet|quiet|shut up|pause|skip it)(?: please)?", t):
+        if news_stop(): return 'Stopped.'   # the app's own cut-off normally got there first: then just confirm it
         try:
-            with open(os.path.join(NEWS_DIR, 'speaking.pid')) as f: os.killpg(int(f.read().strip()), signal.SIGTERM)
-        except (OSError, ValueError): pass
-        return 'Stopped.'
+            with open(os.path.join(NEWS_DIR, 'stopped.json')) as f: recent = time.time() - float(json.load(f)) < 60
+        except (OSError, ValueError, TypeError): recent = False
+        return 'Stopped.' if recent else None
     if re.fullmatch(r'(?:show|open|display)(?: me)? (?:my |the |today\'s |todays |last )?(?:news )?briefing', t):
         files = sorted(f for f in os.listdir(NEWS_DIR) if f.endswith('.md')) if os.path.isdir(NEWS_DIR) else []
         if not files: return 'There’s no briefing yet. Say "brief me" to make one.'

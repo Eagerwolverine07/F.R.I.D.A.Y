@@ -2538,8 +2538,19 @@ final class App: NSObject, WKScriptMessageHandler {
         let pending = studioPending   // a custom-voice reply still being made counts as speaking
         studioToken += 1; studioPending = false
         if !keepClips { studioReset() }
-        guard let v = voice else { return pending }; voice = nil
-        guard v.isRunning else { return pending }; v.terminate(); return true
+        let briefing = stopBriefing()
+        guard let v = voice else { return pending || briefing }; voice = nil
+        guard v.isRunning else { return pending || briefing }; v.terminate(); return true
+    }
+    // F.R.I.D.A.Y Newsroom: the briefing is read by its own `say` (atticus.py --newsroom writes its pid and removes it when done),
+    // so every way of cutting F.R.I.D.A.Y off — the hotkey, Esc, the wake word, a new question — stops the briefing too.
+    func stopBriefing() -> Bool {
+        let file = (Prefs.path as NSString).deletingLastPathComponent + "/newsroom/speaking.pid"
+        guard let text = try? String(contentsOfFile: file, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1 else { return false }
+        try? FileManager.default.removeItem(atPath: file)
+        guard kill(pid, 0) == 0 else { return false }
+        kill(-pid, SIGTERM); kill(pid, SIGTERM); return true
     }
     // F.R.I.D.A.Y custom voice: VoiceStudio (github.com/debpalash/VoiceStudio) running on this Mac speaks in the profile named in
     // Prefs "voiceStudioName" (default "Friday final"). The name is looked up in GET /v1/audio/voices and sent as its profile id: an

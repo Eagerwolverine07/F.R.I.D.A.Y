@@ -134,6 +134,36 @@ class VoiceTests(unittest.TestCase):
     def test_quick_hint_waits_for_news_phrases(self):
         self.assertTrue(a.QUICK_HINT.search('brief me'))
 
+    def test_stop_while_reading_kills_it(self):
+        with open(os.path.join(self.dir, 'speaking.pid'), 'w') as f: f.write('4242')
+        with mock.patch.object(a.os, 'killpg') as kill:
+            self.assertEqual(a.quick_news('stop'), 'Stopped.')
+        kill.assert_called_once_with(4242, a.signal.SIGTERM)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'speaking.pid')))
+
+    def test_plain_stop_after_the_app_cut_it_off(self):
+        self.assertIsNone(a.quick_news('stop'))   # nothing was playing: not ours
+        a.private_json(os.path.join(self.dir, 'stopped.json'), time.time())
+        self.assertEqual(a.quick_news("that's enough"), 'Stopped.')
+        self.assertTrue(a.QUICK_HINT.search('stop'))
+
+    def test_finished_reading_cleans_up(self):
+        class P:
+            pid = 77
+            def __init__(self, code): self.code = code
+            def wait(self): return self.code
+        with open(os.path.join(self.dir, 'speaking.pid'), 'w') as f: f.write('77')
+        a.news_spoken(P(0))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'speaking.pid')))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, 'stopped.json')))
+        a.news_spoken(P(-15)); self.assertTrue(os.path.exists(os.path.join(self.dir, 'stopped.json')))
+
+    def test_app_interrupts_stop_the_briefing(self):
+        swift = open(os.path.join(os.path.dirname(__file__), '..', 'Atticus.swift')).read()
+        shush = swift[swift.index('func shush('):swift.index('func stopBriefing')]
+        self.assertIn('stopBriefing()', shush)
+        self.assertIn('newsroom/speaking.pid', swift)
+
 
 if __name__ == '__main__':
     unittest.main()
