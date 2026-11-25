@@ -2032,8 +2032,28 @@ def dashes(text):
     return re.sub(r'[\u2010-\u2015\u2212]', '-', text)   # macOS writes "Wi‑Fi" with a non-breaking hyphen
 
 
+HEARING_FIXES = os.path.join(DIR, 'friday-fixes.json')
+DEFAULT_FIXES = {'unk': 'unc'}
+
+
+def hearing_fixes():
+    """F.R.I.D.A.Y: words speech recognition keeps mishearing -> what the user said ("unk" -> "unc"); the user adds more by voice."""
+    try:
+        with open(HEARING_FIXES) as f: saved = json.load(f)
+        return {**DEFAULT_FIXES, **{k.lower(): v for k, v in saved.items() if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip()}}
+    except (OSError, ValueError, AttributeError):
+        return dict(DEFAULT_FIXES)
+
+
+def fix_hearing(text):
+    for heard, meant in sorted(hearing_fixes().items(), key=lambda kv: -len(kv[0])):
+        text = re.sub(rf'(?i)(?<![\w-]){re.escape(heard)}(?![\w-])', meant, text)
+    return text
+
+
 def plain(text):
     """Spoken request -> its core words: "Hey Atticus, can you open Spotify please?" -> "open spotify"."""
+    text = fix_hearing(text)
     text = re.sub(r',?\s*\b(?:u+h+|u+m+|e+r+m+|h+m+)\b,?', ' ', text, flags=re.I)
     t = re.sub(r'[,;!?]|:(?!//)|(?<!\w)\.|\.(?!\w)', '', text.lower().strip(' .!?')).strip()   # keep domain dots; normalize punctuation before spoken prefixes
     t = ' '.join(t.split())
@@ -3173,7 +3193,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3212,11 +3232,28 @@ def spoken_numbers(t):
     return ' '.join(out)
 
 
+def quick_hearing_fix(t):
+    """"When you hear unk, I mean unc" / "you heard unk but I said unc": a fix applied to every ask from now on."""
+    m = (re.fullmatch(r"(?:when|if|whenever) you hear (.+?) i (?:mean|meant|said|say) (.+)", t) or
+         re.fullmatch(r"you (?:heard|wrote|got) (.+?) (?:but|when) i (?:said|meant|say) (.+)", t))
+    if not m: return None
+    heard, meant = m[1].strip(" '\""), m[2].strip(" '\"")
+    if not heard or not meant or len(heard) > 40 or len(meant) > 40 or heard == meant: return None
+    try:
+        with open(HEARING_FIXES) as f: saved = json.load(f)
+        if not isinstance(saved, dict): saved = {}
+    except (OSError, ValueError):
+        saved = {}
+    saved[heard.lower()] = meant
+    os.makedirs(DIR, exist_ok=True); private_json(HEARING_FIXES, saved)
+    return f"Got it. When I hear {heard}, I'll take it as {meant}."
+
+
 def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
@@ -8892,6 +8929,7 @@ def main():
         say('!', 'feedback')
         return say('✓', 'Review your feedback before opening GitHub.')
     ping()
+    task = fix_hearing(task)   # F.R.I.D.A.Y: the AI gets "unc", not the misheard "unk"
     key = re.fullmatch(r'\W*(?:my )?(?:license )?key\W+([\w-]{8,})\W*', task, re.I)
     if key or not licensed():
         if not wait_commit():

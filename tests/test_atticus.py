@@ -2052,6 +2052,13 @@ class WatchAndBudgetTests(unittest.TestCase):
                     self.assertTrue(reply.startswith('Copy your Client ID'), words)
             self.assertIsNone(atticus.quick_answer(atticus.plain('play my spotify playlist')))
 
+    def test_hearing_fixes_correct_misheard_words(self):   # F.R.I.D.A.Y: "unc music" was heard as "unk music"
+        with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), patch.object(atticus, 'HEARING_FIXES', os.path.join(root, 'fixes.json')):
+            self.assertEqual(atticus.plain('Play unk music'), 'play unc music')
+            self.assertEqual(atticus.plain('play funky music'), 'play funky music')
+            self.assertEqual(atticus.quick_answer(atticus.plain('When you hear spot if I, I mean Spotify')), "Got it. When I hear spot if i, I'll take it as spotify.")
+            self.assertEqual(atticus.plain('open spot if I'), 'open spotify')
+
     def test_timers_run_detached_and_can_be_cancelled(self):   # F.R.I.D.A.Y
         with tempfile.TemporaryDirectory() as root, patch.object(atticus, 'DIR', root), \
              patch.object(atticus.subprocess, 'Popen', return_value=__import__('types').SimpleNamespace(pid=4321)) as popen, patch.object(atticus.os, 'killpg') as kill:

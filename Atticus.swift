@@ -2502,6 +2502,8 @@ final class App: NSObject, WKScriptMessageHandler {
         all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs"]
         let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
         all += lists.compactMap { $0["name"] as? String }.prefix(40)
+        let fixes = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/friday-fixes.json")))) as? [String: String] ?? [:]
+        all += ["unc"] + fixes.values.sorted()   // the words the user said that it misheard
         all.append(profileName(config + "/me.json"))
         all.append(contentsOf: shortcuts.keys.sorted())
         let appDirs = [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"]
