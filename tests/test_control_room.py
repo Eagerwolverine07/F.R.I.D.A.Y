@@ -79,6 +79,8 @@ class WiringTests(unittest.TestCase):
 
     def test_page_escapes_text_and_has_hooks(self):
         self.assertIn('window.control = {', PAGE); self.assertIn('update(s)', PAGE); self.assertIn('mode(name)', PAGE)
+        self.assertIn('id="wave"', PAGE); self.assertIn("wave.target = name === 'talk' ? 12 : 0", PAGE)   # the outer ring ripples only while she speaks
+        self.assertIn("prefers-reduced-motion: reduce)').matches", PAGE)
         for field in ('r.you', 'r.friday', 'r.title.toUpperCase()', 'r.label.toUpperCase()'):
             self.assertIn('esc(' + field + ')', PAGE)
 

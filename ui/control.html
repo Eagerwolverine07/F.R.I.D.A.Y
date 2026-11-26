@@ -67,7 +67,7 @@ input::placeholder{color:var(--dim)}
 <div class="center">
 <svg viewBox="0 0 520 520" aria-hidden="true">
 <circle cx="260" cy="260" r="246" fill="none" stroke="#8a4a22" stroke-width="1" stroke-dasharray="2 9"/>
-<g class="r1"><circle cx="260" cy="260" r="226" fill="none" stroke="#ff8a3d" stroke-width="10" stroke-dasharray="34 22 8 22"/></g>
+<g class="r1"><path id="wave" d="M 486 260 A 226 226 0 1 1 34 260 A 226 226 0 1 1 486 260" fill="none" stroke="#ff8a3d" stroke-width="10" stroke-dasharray="34 22 8 22"/></g>
 <path d="M 260 34 A 226 226 0 0 1 452 140" fill="none" stroke="#ff4f6d" stroke-width="3"/>
 <g class="r2"><circle cx="260" cy="260" r="196" fill="none" stroke="#c2652a" stroke-width="2" stroke-dasharray="1 7"/><circle cx="260" cy="260" r="182" fill="none" stroke="#ff8a3d" stroke-width="6" stroke-dasharray="60 30"/></g>
 <g class="r3"><circle cx="260" cy="260" r="150" fill="none" stroke="#ffb454" stroke-width="1.5" stroke-dasharray="90 18 4 18"/></g>
@@ -127,9 +127,31 @@ window.control = {
   },
   mode(name) {   // standby, hear, busy, talk
     document.body.className = name
+    wave.target = name === 'talk' ? 12 : 0
     $('mode').textContent = {hear:'LISTENING', busy:'THINKING', talk:'SPEAKING'}[name] || 'STANDING BY'
   },
 }
+// The outer ring ripples while F.R.I.D.A.Y speaks: two travelling waves, swelling and easing like speech, flat again when she stops.
+const wave = { amp: 0, target: 0, still: true }
+function drawWave(now) {
+  const t = now / 1000
+  wave.amp += (wave.target - wave.amp) * 0.08
+  if (wave.target === 0 && wave.amp < 0.05) {
+    if (!wave.still) { $('wave').setAttribute('d', 'M 486 260 A 226 226 0 1 1 34 260 A 226 226 0 1 1 486 260'); wave.still = true }
+  } else {
+    wave.still = false
+    const swell = 0.55 + 0.45 * Math.abs(Math.sin(t * 2.3) * Math.sin(t * 1.1 + 1))
+    let d = ''
+    for (let i = 0; i <= 180; i++) {
+      const a = i / 180 * Math.PI * 2
+      const r = 226 + wave.amp * swell * (0.6 * Math.sin(6 * a - 3.2 * t) + 0.4 * Math.sin(11 * a + 2.1 * t))
+      d += (i ? ' L ' : 'M ') + (260 + r * Math.cos(a)).toFixed(1) + ' ' + (260 + r * Math.sin(a)).toFixed(1)
+    }
+    $('wave').setAttribute('d', d + ' Z')
+  }
+  requestAnimationFrame(drawWave)
+}
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) requestAnimationFrame(drawWave)
 $('ask').addEventListener('submit', e => { e.preventDefault(); const t = $('text').value.trim(); if (t) { post({send:t}); $('text').value = '' } })
 document.addEventListener('keydown', e => { if (e.key === 'Escape') post({close:true}) })
 post({ready:true})
