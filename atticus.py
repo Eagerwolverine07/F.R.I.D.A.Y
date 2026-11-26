@@ -3239,7 +3239,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3483,6 +3483,111 @@ def quick_morning(t):
     return 'Let’s go. Putting your briefing together.'
 
 
+
+# ---- F.R.I.D.A.Y ElevenLabs voice (free plan friendly) ----
+# The key is typed into a private macOS dialog, never into chat or speech, and kept only in elevenlabs.curl (0600, as a curl
+# header). elevenlabs.json holds the chosen voice. Atticus.swift speaks through it and falls back to the Mac voice on any failure.
+ELEVEN, ELEVEN_CURL = os.path.join(DIR, 'elevenlabs.json'), os.path.join(DIR, 'elevenlabs.curl')
+ELEVEN_FAVORITES = ['Alice', 'Matilda', 'Lily', 'Sarah', 'Jessica', 'Laura', 'Charlotte', 'Rachel']   # calm, clear female voices to start with
+
+
+def eleven_settings():
+    try:
+        with open(ELEVEN) as f: data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError): return {}
+
+
+def eleven_key():
+    try:
+        with open(ELEVEN_CURL) as f: m = re.search(r'xi-api-key: ([A-Za-z0-9_\-]+)', f.read())
+        return m[1] if m else ''
+    except OSError: return ''
+
+
+def eleven_api(path, key=None):
+    return http_json('https://api.elevenlabs.io' + path, headers={'xi-api-key': key or eleven_key()}, timeout=10)
+
+
+def eleven_voices(key=None):
+    """[(name, voice_id)] in the account: the premade voices plus any designed or saved ones."""
+    rows = (eleven_api('/v1/voices', key) or {}).get('voices') or []
+    return [(str(v.get('name', '')).split(' - ')[0].strip(), v['voice_id']) for v in rows if isinstance(v, dict) and v.get('voice_id')]
+
+
+def eleven_notify(message):
+    subprocess.run(['osascript', '-e', f'display notification {json.dumps(message)} with title "F.R.I.D.A.Y voice"'], capture_output=True)
+
+
+def eleven_connect():
+    """--eleven-connect: ask for the key in a private dialog, check it, save it, pick a starting voice and switch to it."""
+    script = ('text returned of (display dialog "Paste your ElevenLabs API key. It stays private on this Mac." default answer "" '
+              'with hidden answer with title "F.R.I.D.A.Y voice" buttons {"Cancel", "Connect"} default button "Connect")')
+    try: key = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=600).stdout.strip()
+    except (OSError, subprocess.SubprocessError): return
+    if not key: return   # cancelled
+    if not re.fullmatch(r'[A-Za-z0-9_\-]{20,200}', key):
+        return eleven_notify('That doesn’t look like an ElevenLabs key. Copy it again from ElevenLabs → Developers → API Keys.')
+    try: voices = eleven_voices(key)
+    except SpotifyError as e:
+        return eleven_notify('ElevenLabs didn’t accept that key.' if e.status in (401, 403) else f'ElevenLabs said no (error {e.status}). Try again in a minute.')
+    except (OSError, ValueError):
+        return eleven_notify('I couldn’t reach ElevenLabs. Check the internet connection and try again.')
+    if not voices: return eleven_notify('The key works, but the account has no voices yet.')
+    names = {n.lower(): (n, v) for n, v in voices}
+    name, voice_id = next((names[f.lower()] for f in ELEVEN_FAVORITES if f.lower() in names), voices[0])
+    os.makedirs(DIR, exist_ok=True)
+    fd = os.open(ELEVEN_CURL, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f: f.write(f'header = "xi-api-key: {key}"\n')
+    os.chmod(ELEVEN_CURL, 0o600)
+    private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': voice_id, 'voice': name})
+    eleven_notify(f'Connected. I now speak as {name}. Say “use the ElevenLabs voice …” to try another.')
+
+
+def quick_voice(t):
+    """Voice engine by voice: connect ElevenLabs, pick a voice, list voices, credits left, back to the Mac voice."""
+    t = re.sub(r"^(?:(?:ok|okay|hey|friday|please|can you|could you)\s+)+|(?:\s+(?:please|now|friday))+$", '', t).strip()
+    t = re.sub(r'\beleven ?labs?\b|\b11 ?labs?\b|\beleven laps\b', 'elevenlabs', t)
+    if re.fullmatch(r"(?:connect|set up|setup|link|add|sign in to|log in to)(?: to)? elevenlabs(?: voice)?", t):
+        subprocess.Popen(['/bin/sh', ME, '--eleven-connect'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 'A box is opening for your ElevenLabs key. Paste it there, not here.'
+    if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? (?:mac|ava|normal|built in|built-in|old) voice", t):
+        if eleven_settings(): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+        return 'Back to the Mac voice.'
+    if not eleven_key():
+        if re.search(r'\belevenlabs\b', t) and re.fullmatch(r"(?:use|switch to|try)(?: the)? elevenlabs(?: voice)?.*|(?:what|which|list)(?: are)?(?: the| my)? elevenlabs voices.*|how many (?:elevenlabs )?credits.*", t):
+            return 'ElevenLabs isn’t connected yet. Say “connect ElevenLabs” first.'
+        return None
+    if re.fullmatch(r"(?:use|read) elevenlabs (?:for|on) (?:long|longer) (?:answers|replies|readings|briefings)(?: too)?|(?:read|use elevenlabs for) (?:the |my )?briefings?(?: with elevenlabs)?(?: too)?", t):
+        private_json(ELEVEN, {**eleven_settings(), 'long': True}); return 'Long readings will use ElevenLabs too. That uses credits faster.'
+    if re.fullmatch(r"(?:save|keep|protect) (?:my |the )?credits|(?:use the mac voice|stop using elevenlabs) for (?:long|longer) (?:answers|replies|readings|briefings)", t):
+        private_json(ELEVEN, {**eleven_settings(), 'long': False}); return 'Long readings go back to the Mac voice, to save credits.'
+    if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? elevenlabs(?: voice)?", t):
+        private_json(ELEVEN, {**eleven_settings(), 'on': True})
+        return f"Switched to ElevenLabs{', as ' + eleven_settings().get('voice', '') if eleven_settings().get('voice') else ''}."
+    m = re.fullmatch(r"(?:use|switch to|try|change to)(?: the)?(?: elevenlabs)? voice(?: called| named)? (.{2,40})|(?:use|switch to|try)(?: the)? (.{2,40}?) (?:elevenlabs )?voice(?: from elevenlabs)?", t)
+    if m:
+        want = (m[1] or m[2] or '').strip().strip('"“”').lower()
+        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'a different', 'another', 'other'): return None
+        try: voices = eleven_voices()
+        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
+        found = next(((n, v) for n, v in voices if n.lower() == want), None) or next(((n, v) for n, v in voices if n.lower().startswith(want)), None)
+        if not found: return f'There’s no ElevenLabs voice called {want.title()}. Say “what ElevenLabs voices do you have” to hear the list.'
+        private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': found[1], 'voice': found[0]})
+        return f'Done. This is {found[0]}.'
+    if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)? (?:elevenlabs )?voices(?: do you have| are there| can you use| are available)?|list(?: the| my)? elevenlabs voices", t):
+        try: names = [n for n, _ in eleven_voices()]
+        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
+        return 'Voices you can pick: ' + ', '.join(dict.fromkeys(names)) + '.'
+    if re.fullmatch(r"how many (?:elevenlabs )?(?:credits|characters)(?: do (?:i|we) have)?(?: are)?(?: left)?(?: this month)?|(?:elevenlabs )?credits left", t):
+        try: sub = eleven_api('/v1/user/subscription') or {}
+        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
+        used, limit = sub.get('character_count'), sub.get('character_limit')
+        if not isinstance(used, int) or not isinstance(limit, int) or not limit: return 'ElevenLabs didn’t say.'
+        return f'{max(0, limit - used):,} of {limit:,} credits left this month.'
+    return None
+
+
 CONTROL_NAME = r"(?:the |my )?(?:control room|command center|hud|dashboard)"
 
 
@@ -3518,7 +3623,7 @@ def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (quick_morning, quick_style, quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (quick_morning, quick_style, quick_voice, quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
@@ -9465,6 +9570,8 @@ def main():
         return print(reply or 'No matching Spotify result in web search; this does not search your full private library.')
     if args[:1] == ['--queue']:
         return print(queue(' '.join(args[1:])))
+    if args[:1] == ['--eleven-connect']:   # F.R.I.D.A.Y: the ElevenLabs key, typed into a private dialog
+        return eleven_connect()
     if args[:1] == ['--morning']:   # F.R.I.D.A.Y: the morning hello, or nothing (already said today, quiet mode, not morning)
         return print(morning_line())
     if args[:1] == ['--control-state']:   # F.R.I.D.A.Y Control Room: the window's live readings

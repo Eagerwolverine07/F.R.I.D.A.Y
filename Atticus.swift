@@ -2499,7 +2499,7 @@ final class App: NSObject, WKScriptMessageHandler {
         var all = DictationData.words
         all.append("Atticus")
         // F.R.I.D.A.Y: names it kept mishearing — the wake word, its own name, Spotify and the user's playlists
-        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen"]
+        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen", "ElevenLabs"]
         let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
         all += lists.compactMap { $0["name"] as? String }.prefix(40)
         let fixes = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/friday-fixes.json")))) as? [String: String] ?? [:]
@@ -2586,7 +2586,23 @@ final class App: NSObject, WKScriptMessageHandler {
     var studioClips: [String: VoiceClip] = [:], studioQueue: [String] = [], studioRound = 0, studioBusy = false
     var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
     var studioVoiceID: String?, studioVoiceAt = Date.distantPast, studioNamesShown = ""
-    var studioOn: Bool { Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
+    var studioOn: Bool { elevenOn || Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
+    // F.R.I.D.A.Y ElevenLabs voice: `atticus.py --eleven-connect` saves elevenlabs.json ({"on", "voice_id", "voice"}) and
+    // elevenlabs.curl (the key as a curl header, 0600, so it never shows in a process list). Any failure — no internet, out of
+    // free credits — falls back to the Mac voice through the same path as VoiceStudio; a refusal pauses ElevenLabs for an hour.
+    var elevenPausedUntil = Date.distantPast, elevenCache: (Date, [String: Any])? = nil
+    var elevenDir: String { (Prefs.path as NSString).deletingLastPathComponent }
+    var eleven: [String: Any] {
+        let file = elevenDir + "/elevenlabs.json"
+        let changed = (try? FileManager.default.attributesOfItem(atPath: file)[.modificationDate] as? Date) ?? .distantPast
+        if let c = elevenCache, c.0 == changed { return c.1 }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        elevenCache = (changed, data); return data
+    }
+    var elevenOn: Bool {
+        eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
+            FileManager.default.fileExists(atPath: elevenDir + "/elevenlabs.curl") && Date() > elevenPausedUntil
+    }
     static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
         var parts: [String] = [], current = ""
         for sentence in words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n") {
@@ -2614,6 +2630,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     // The profile id for the configured name, from VoiceStudio's own list (cached a minute); nil when VoiceStudio has no such profile.
     func studioVoice(_ found: @escaping (String?) -> Void) {
+        if elevenOn { return found(eleven["voice_id"] as? String) }
         if let id = studioVoiceID, Date().timeIntervalSince(studioVoiceAt) < 60 { return found(id) }
         let wanted = Prefs.str("voiceStudioName").trimmingCharacters(in: .whitespaces).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
         _ = studioCurl(["--max-time", "5", "http://127.0.0.1:3900/v1/audio/voices"]) { [weak self] status, text in
@@ -2638,7 +2655,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // Queue one sentence; VoiceStudio makes them one at a time, in order.
     @discardableResult func studioClip(_ text: String) -> VoiceClip {
         if let clip = studioClips[text] { return clip }
-        let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count).wav")
+        let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count)." + (elevenOn ? "mp3" : "wav"))
         studioClips[text] = clip; studioQueue.append(text)
         if !studioBusy { studioNext() }
         return clip
@@ -2654,6 +2671,24 @@ final class App: NSObject, WKScriptMessageHandler {
                 self.studioBusy = false
                 for t in self.studioQueue { if let c = self.studioClips[t] { c.done = true; c.waiters.forEach { $0(false) }; c.waiters = [] } }
                 self.studioQueue = []; return
+            }
+            if self.elevenOn {
+                let body = (try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": "eleven_flash_v2_5"])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                self.studioFetch = self.studioCurl(["--max-time", "30", "-o", clip.file, "-w", "%{http_code}", "-K", self.elevenDir + "/elevenlabs.curl",
+                                                    "-H", "Content-Type: application/json", "-H", "Accept: audio/mpeg", "--data-binary", body,
+                                                    "https://api.elevenlabs.io/v1/text-to-speech/\(id)?output_format=mp3_44100_128"]) { [weak self] status, code in
+                    guard let self, round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
+                    self.studioFetch = nil; self.studioBusy = false; self.studioQueue.removeFirst()
+                    let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
+                    clip.ok = status == 0 && code == "200" && size > 1000; clip.done = true
+                    if ["401", "402", "403", "429"].contains(code) {   // bad key or out of free credits: the Mac voice for an hour, without trying each sentence
+                        self.elevenPausedUntil = Date().addingTimeInterval(3600)
+                        NSLog("ElevenLabs refused (HTTP %@): Mac voice for an hour", code)
+                    } else if !clip.ok { NSLog("ElevenLabs failed (curl %d, HTTP %@)", status, code) }
+                    clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
+                    self.studioNext()
+                }
+                return
             }
             var fields: [String: Any] = ["model": "tts-1", "voice": id, "input": text, "response_format": "wav"]
             let steps = self.studioSteps
@@ -2677,12 +2712,12 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     // While the answer streams in: start making each finished sentence before the answer is done.
     func studioPrefetch(_ partial: String) {
-        guard studioOn, talksBack else { return }
+        guard studioOn, talksBack, !(elevenOn && partial.count > 700 && eleven["long"] as? Bool != true) else { return }   // a long answer goes to the Mac voice: make nothing ahead
         for part in Self.voiceChunks(spoken(partial), closedOnly: true) { studioClip(part) }
     }
     // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
     func warmStudio() {
-        guard studioOn, Date().timeIntervalSince(studioLast) > 600 else { return }
+        guard studioOn, !elevenOn, Date().timeIntervalSince(studioLast) > 600 else { return }
         studioLast = Date()
         studioVoice { [weak self] id in
             guard let self, let id, !self.studioBusy else { return }
@@ -2760,7 +2795,8 @@ final class App: NSObject, WKScriptMessageHandler {
             let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/say"); p.arguments = readAloudArguments(words) { self.voiceQualityTip() }
             self.play(p)
         }
-        if studioOn { studioSpeak(words, fallback: mac) } else { mac() }
+        let saveCredits = elevenOn && words.count > 700 && eleven["long"] as? Bool != true   // a briefing would use a big share of the free month
+        if studioOn && !saveCredits { studioSpeak(words, fallback: mac) } else { mac() }
     }
     func linger(_ s: Double) -> Double { s * (["short": 0.5, "long": 2][Prefs.str("linger")] ?? 1) }
     func clearPointContext() {
