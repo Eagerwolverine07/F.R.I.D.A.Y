@@ -544,7 +544,7 @@ Tools:
 - Installed CLIs: use attached help; verify destination content. Prompt sends: JSON accepted/queued + Enter means sent; never retry for an unseen turn start. Confirm in one short line. Blocked files: read the app window; change permissions only when a tool asks.
 - Personal data: {shlex.quote(ME)} --me <category>|find "<words>". Categories: basics, contact, places, school_work, links, preferences, people, notes. Forget a found fact: --me drop <id> "<exact user words>". People: --contacts "<name/relationship>" or the app address book; missing/ambiguous: choices, never guess. Calendar (any language): --calendar --help for JSON list/add/move/delete; always use it (picks ambiguous events, confirms edits).
 - Spotify: {PLAY} "<name>" plays; {QUEUE} "<track>" queues; {ME} --spotify-link [ID] links.
-- ElevenLabs links only via the user saying "connect ElevenLabs" (a private key box), not a key on its site.
+- ElevenLabs: linked only by "connect ElevenLabs" (a private key box).
 - Past asks: {HISTORY} "<words, day or date>". Past meetings: {shlex.quote(ME)} --meeting-history "<words, weekday or date>".
 - Watch: {WATCH} "<app>" "<window title words>" <gone|shows|settled> "<phrase>" ["<then request>"], or {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]. No AI until done. Stop: {shlex.quote(ME)} --unwatch.
 - Routines: {ROUTINE} add time HH:MM daily|weekdays "<ask>" [mode] | add interval SECONDS "<ask>" [mode] | list | remove listed-ID.
