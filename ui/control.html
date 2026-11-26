@@ -80,7 +80,7 @@ input::placeholder{color:var(--dim)}
 <div id="mode">STANDING BY</div><div class="muted" id="hint">SAY “FRIDAY” OR USE YOUR SHORTCUT</div>
 </div>
 <div class="col">
-<section style="flex:1.2;display:flex;flex-direction:column"><h2>TRANSCRIPT</h2><div class="talk-log" id="talk"><p class="empty">Nothing yet today.</p></div></section>
+<section style="flex:1.2;display:flex;flex-direction:column"><h2>TRANSCRIPT</h2><div class="talk-log" id="talk"><p class="empty">Nothing yet today.</p></div><div class="talk-log" id="live" style="margin-top:10px"></div></section>
 <section style="flex:1"><h2>AGENTS <small id="running"></small></h2><div id="agents"><p class="empty">No agents running.</p></div></section>
 </div>
 </main>
@@ -116,14 +116,22 @@ window.control = {
       $('prog').style.width = '0'; $('at').textContent = $('len').textContent = ''
     }
     const t = s.transcript || []
+    if (live.heard && t.length && t[t.length - 1].you.trim() === live.heard.trim() && !live.streaming) control.live('reset', '')   // the finished turn is in the log now
     $('talk').innerHTML = t.length ? t.map(r => `<p class="you">YOU › ${esc(r.you)}</p><p class="fri">» ${esc(r.friday)}</p>`).join('') : '<p class="empty">Nothing yet today.</p>'
     $('talk').scrollTop = $('talk').scrollHeight
-    const a = s.agents || [], timers = s.timers || [], live = a.filter(r => r.status !== 'done').length + timers.length
-    $('running').textContent = live ? live + ' RUNNING' : ''
+    const a = s.agents || [], timers = s.timers || [], active = a.filter(r => r.status !== 'done').length + timers.length
+    $('running').textContent = active ? active + ' RUNNING' : ''
     const rows = a.map(r => `<div class="row"><span>${esc(r.title.toUpperCase())}</span><span style="color:var(${r.status === 'done' ? '--dim' : r.status === 'needs-you' ? '--rose' : '--gold'})">${esc(r.status === 'needs-you' ? 'NEEDS YOU' : r.status === 'done' ? 'DONE' : (r.step || r.status).toUpperCase().slice(0, 28))}</span></div>`)
       .concat(timers.map(r => `<div class="row"><span>TIMER · ${esc(r.label.toUpperCase())}</span><span style="color:var(--gold)">${mmss(r.left * 1000)} LEFT</span></div>`))
       .concat(s.briefing ? [`<div class="row" style="color:var(--dim)"><span>DAILY BRIEFING</span><span>${esc(s.briefing)}</span></div>`] : [])
     $('agents').innerHTML = rows.length ? rows.join('') : '<p class="empty">No agents running.</p>'
+  },
+  live(kind, text) {   // the conversation as it happens: what you said, then her answer as it streams
+    if (kind === 'reset') { live.heard = live.answer = ''; live.streaming = false }
+    if (kind === 'heard') { live.heard = text; live.answer = ''; live.streaming = false }
+    if (kind === 'answer') { live.answer = text; live.streaming = true; clearTimeout(live.done); live.done = setTimeout(() => { live.streaming = false }, 4000) }
+    $('live').innerHTML = (live.heard ? `<p class="you">YOU › ${esc(live.heard)}</p>` : '') + (live.answer ? `<p class="fri">» ${esc(live.answer)}</p>` : '')
+    $('live').scrollIntoView({block: 'end'})
   },
   mode(name) {   // standby, hear, busy, talk
     document.body.className = name
@@ -133,6 +141,7 @@ window.control = {
 }
 // The outer ring ripples while F.R.I.D.A.Y speaks: two travelling waves, swelling and easing like speech, flat again when she stops.
 const wave = { amp: 0, target: 0, still: true }
+const live = { heard: '', answer: '', streaming: false, done: 0 }
 function drawWave(now) {
   const t = now / 1000
   wave.amp += (wave.target - wave.amp) * 0.08

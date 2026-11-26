@@ -3125,7 +3125,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if drawing.active && !stuck && !dragging { avoidDrawing() }   // grew onto a mark; a box the user placed waits for the next step
     }
 
-    func js(_ call: String, _ arg: Any? = nil) { callJS(web, "ui." + call, arg.map { [$0] } ?? []) }
+    func js(_ call: String, _ arg: Any? = nil) { callJS(web, "ui." + call, arg.map { [$0] } ?? []); controlRoom.relay(call, arg) }
     var pointerNext: String?, pointerBusy = false, pointerHand = false
     func pointer(_ args: String) {   // Atticus never activates, so WebKit runs no :hover or cursor in the box: the page marks .hot and says if the cursor is a hand
         pointerNext = args
@@ -3147,6 +3147,8 @@ final class App: NSObject, WKScriptMessageHandler {
         return ["list": serverModels.isEmpty ? [pick].filter { !$0.isEmpty } : serverModels, "pick": pick]
     }
     func show() {
+        // F.R.I.D.A.Y: with the Control Room open, the conversation shows there; the box comes up only for a question to answer
+        if controlRoom.showing && !retryOffer && askFile.isEmpty { return }
         gen += 1; js("visible", true); js("mode", Prefs.bool("safe")); js("models", modelChoices())
         startFollowingPointerScreen()
         if panel.isVisible {   // still up: stay where the user dragged it
@@ -8670,6 +8672,19 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         if b["ready"] != nil { lastMode = ""; refresh(); mirror() }
         if let t = b["send"] as? String, !t.trimmingCharacters(in: .whitespaces).isEmpty { app.typed(String(t.prefix(4000)), keep: true) }
         if b["close"] != nil { window?.performClose(nil) }
+    }
+    var showing: Bool { window?.isVisible == true && window?.isMiniaturized == false }
+    func relay(_ call: String, _ arg: Any?) {   // the box's live words, mirrored while the Control Room is up
+        guard showing, let web else { return }
+        func send(_ kind: String, _ text: String) {
+            guard let data = try? JSONSerialization.data(withJSONObject: [kind, text]), let args = String(data: data, encoding: .utf8) else { return }
+            web.evaluateJavaScript("control.live(...\(args))")
+        }
+        if call == "listen" { send("reset", "") }
+        else if call == "words", let w = arg as? String { send("heard", w) }
+        else if call == "line", let l = arg as? String, l.hasPrefix("… ") || l.hasPrefix("✓ ") {
+            send("answer", String(l.dropFirst(2)).replacingOccurrences(of: "\u{2028}", with: "\n"))
+        }
     }
     func windowWillClose(_ n: Notification) { poll?.invalidate(); poll = nil; pulse?.invalidate(); pulse = nil }
 }

@@ -84,6 +84,16 @@ class WiringTests(unittest.TestCase):
         for field in ('r.you', 'r.friday', 'r.title.toUpperCase()', 'r.label.toUpperCase()'):
             self.assertIn('esc(' + field + ')', PAGE)
 
+    def test_wake_word_stays_in_the_control_room(self):
+        show = SWIFT[SWIFT.index('    func show() {'):]
+        show = show[:show.index('\n    }\n')]
+        self.assertIn('if controlRoom.showing && !retryOffer && askFile.isEmpty { return }', show)   # a question card still comes up
+        self.assertIn('controlRoom.relay(call, arg)', SWIFT[SWIFT.index('    func js(_ call: String, _ arg: Any? = nil) {'):][:200])
+        relay = SWIFT[SWIFT.index('func relay('):SWIFT.index('func windowWillClose(_ n: Notification) { poll')]
+        for kind in ('"reset"', '"heard"', '"answer"'): self.assertIn(kind, relay)
+        self.assertIn('JSONSerialization.data(withJSONObject: [kind, text])', relay)   # words reach the page as data, never as code
+        self.assertIn('live(kind, text)', PAGE); self.assertIn('esc(live.heard)', PAGE); self.assertIn('esc(live.answer)', PAGE)
+
 
 if __name__ == '__main__':
     unittest.main()
