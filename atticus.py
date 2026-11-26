@@ -544,7 +544,7 @@ Tools:
 - Installed CLIs: use attached help; verify destination content. Prompt sends: JSON accepted/queued + Enter means sent; never retry for an unseen turn start. Confirm in one short line. Blocked files: read the app window; change permissions only when a tool asks.
 - Personal data: {shlex.quote(ME)} --me <category>|find "<words>". Categories: basics, contact, places, school_work, links, preferences, people, notes. Forget a found fact: --me drop <id> "<exact user words>". People: --contacts "<name/relationship>" or the app address book; missing/ambiguous: choices, never guess. Calendar (any language): --calendar --help for JSON list/add/move/delete; always use it (picks ambiguous events, confirms edits).
 - Spotify: {PLAY} "<name>" plays; {QUEUE} "<track>" queues; {ME} --spotify-link [ID] links.
-- Past asks: {HISTORY} "<words or date>". Past meetings: {shlex.quote(ME)} --meeting-history "<words, weekday or date>".
+- Past asks: {HISTORY} "<words, day or date>". Past meetings: {shlex.quote(ME)} --meeting-history "<words, weekday or date>".
 - Watch: {WATCH} "<app>" "<window title words>" <gone|shows|settled> "<phrase>" ["<then request>"], or {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]. No AI until done. Stop: {shlex.quote(ME)} --unwatch.
 - Routines: {ROUTINE} add time HH:MM daily|weekdays "<ask>" [mode] | add interval SECONDS "<ask>" [mode] | list | remove listed-ID.
 Earlier supplies follow-ups. "this"/"here" = front window; "it" after a task = Last task window. Answer/draw from open content (video, page, doc) unless told not to.
@@ -4861,15 +4861,63 @@ def fast_hands(text):
     return result.splitlines()[0] if ok or 'The user said no.' in result else None
 
 
-def history(words):
-    """Past asks that match, best first: "what was that link yesterday", "do what I did Monday again". Words or a date (2026-10-10)."""
-    want = [w for w in re.findall(r'[\w-]+', words.lower()) if len(w) > 2]
+HISTORY_FILLER = set('what when where which who how did does do was were we you me my our i about talk talked talking say said tell told ask asked the a an and or of on in at to for from that this those these it its is are be been with any anything something remind show find look up again earlier conversation chat chats discuss discussed friday'.split())
+MONTHS = {m: i for i, m in enumerate('january february march april may june july august september october november december'.split(), 1)}
+
+
+def history_days(words, now=None):
+    """("from", "to") dates the words name, and the words left over: "yesterday", "this morning", "last tuesday", "last week", "nov 20"."""
+    from datetime import timedelta
+    now, t = now or datetime.now(), ' ' + words.lower() + ' '
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    span = None
+    def take(pattern):
+        nonlocal t
+        m = re.search(pattern, t)
+        if m: t = t[:m.start()] + ' ' + t[m.end():]
+        return m
+    if m := take(r'\b(\d{4})-(\d{2})-(\d{2})\b'):
+        day = datetime(int(m[1]), int(m[2]), int(m[3])); span = (day, day)
+    elif m := take(r'\b(?:on |last )?(' + '|'.join(MONTHS) + r'|' + '|'.join(k[:3] for k in MONTHS) + r')\.? (\d{1,2})(?:st|nd|rd|th)?\b'):
+        month = next(v for k, v in MONTHS.items() if k.startswith(m[1][:3]))
+        day = datetime(now.year, month, int(m[2]))
+        if day > now: day = day.replace(year=now.year - 1)
+        span = (day, day)
+    elif take(r'\b(?:this morning|this afternoon|this evening|tonight|today)\b'): span = (today, today)
+    elif take(r'\b(?:yesterday|last night)\b'): span = (today - timedelta(days=1), today - timedelta(days=1))
+    elif take(r'\b(?:the )?day before yesterday\b'): span = (today - timedelta(days=2), today - timedelta(days=2))
+    elif take(r'\blast week\b'): span = (today - timedelta(days=today.weekday() + 7), today - timedelta(days=today.weekday() + 1))
+    elif take(r'\bthis week\b'): span = (today - timedelta(days=today.weekday()), today)
+    elif m := take(r'\b(\d{1,2}|a couple of|a few) days ago\b'):
+        n = 2 if 'couple' in m[1] else 3 if 'few' in m[1] else int(m[1]); span = (today - timedelta(days=n), today - timedelta(days=n))
+    elif m := take(r'\b(?:(?:on|last|this past) (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|(monday|tuesday|wednesday|thursday|saturday|sunday))s?\b'):
+        back = (today.weekday() - WEEKDAYS.index(m[1] or m[2])) % 7 or 7   # the most recent one before today; a bare "Friday" is her name
+        day = today - timedelta(days=back); span = (day, day)
+    left = [w for w in re.findall(r'[\w-]+', t) if len(w) > 2 and w not in HISTORY_FILLER]
+    return span, left
+
+
+def history(words, now=None):
+    """Past asks that match, best first, or every ask of a day in order: "what was that link yesterday", "what did we talk about last
+    Tuesday", "do what I did Monday again". Words, a day ("yesterday", "last week", "Nov 20") or a date (2026-10-10)."""
+    span, want = history_days(words, now)
     rows = [r for r in read_rows(os.path.join(DIR, 'log.jsonl')) if isinstance(r.get('task'), str) and r.get('reply')]
+    if span:
+        lo, hi = span[0].strftime('%Y-%m-%d'), span[1].strftime('%Y-%m-%d')
+        rows = [r for r in rows if lo <= str(r.get('at', ''))[:10] <= hi]
     hay = lambda r: ' '.join([r.get('at', ''), r['task'], str(r.get('reply', '')), ' '.join(r.get('ran') or [])]).lower()
-    hits = sorted(((sum(w in hay(r) for w in want), i, r) for i, r in enumerate(rows)), key=lambda h: h[:2], reverse=True)
-    hits = [r for score, _, r in hits if score or not want][:6]
-    return '\n'.join(f"{r.get('at', '')[:16]} asked: {r['task'][:200]} -> {str(r['reply'])[:300]}" +
-                     (f" [ran: {'; '.join(r['ran'])[:200]}]" if r.get('ran') else '') for r in hits) or 'Nothing matches.'
+    if want:
+        hits = sorted(((sum(w in hay(r) for w in want), i, r) for i, r in enumerate(rows)), key=lambda h: h[:2], reverse=True)
+        hits = [r for score, _, r in hits if score][:8]
+    else:
+        hits = rows[-15:] if span else rows[-6:]   # a day alone: that day's asks, in order; nothing at all: the latest
+    def when(r):
+        try: return datetime.strptime(r.get('at', '')[:16], '%Y-%m-%d %H:%M').strftime('%a %b %-d, %-I:%M %p')
+        except ValueError: return r.get('at', '')[:16]
+    found = '\n'.join(f"{when(r)} asked: {r['task'][:300]} -> {str(r['reply'])[:500]}" +
+                      (f" [ran: {'; '.join(r['ran'])[:200]}]" if r.get('ran') else '') for r in hits)
+    if found: return found
+    return ('Nothing that day.' if span and not want else 'Nothing matches.') + ('' if rows or span else ' (No history yet.)')
 
 
 def routines():
