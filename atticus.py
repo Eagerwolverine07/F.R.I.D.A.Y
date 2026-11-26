@@ -3240,7 +3240,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits|kokoro|cocoro)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3570,10 +3570,55 @@ def eleven_connect():
     eleven_notify(f'Connected. I now speak as {name}.')
 
 
+KOKORO = os.path.join(DIR, 'kokoro.json')
+KOKORO_VOICES = {'heart': 'af_heart', 'bella': 'af_bella', 'nicole': 'af_nicole', 'sarah': 'af_sarah', 'sky': 'af_sky', 'nova': 'af_nova',
+                 'river': 'af_river', 'jessica': 'af_jessica', 'kore': 'af_kore', 'aoede': 'af_aoede', 'alloy': 'af_alloy',
+                 'emma': 'bf_emma', 'alice': 'bf_alice', 'isabella': 'bf_isabella', 'lily': 'bf_lily'}   # English women's voices, by first name
+
+
+def kokoro_settings():
+    try:
+        with open(KOKORO) as f: data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError): return {}
+
+
+def kokoro_installed():
+    return os.path.exists(os.path.join(DIR, 'kokoro', 'venv', 'bin', 'python'))
+
+
+def quick_kokoro(t):
+    """The free local voice: switch to it, pick one of its voices by name, list them. None when the words aren't about it."""
+    named = re.fullmatch(r"(?:use|switch to|try|change to)(?: the)?(?: kokoro)? voice(?: called| named)? (\w+)|(?:use|switch to|try)(?: the)? (\w+) (?:kokoro )?voice", t)
+    if not re.search(r'\bkokoro\b', t) and not (kokoro_settings().get('on') and (named or re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)? voices.*", t))):
+        return None
+    if not kokoro_installed(): return 'The Kokoro voice isn’t installed yet. Double-click “Install Kokoro Voice” in Downloads.'
+    if re.fullmatch(r"(?:use|switch to|go back to|back to|try)(?: the)? kokoro(?: voice)?", t):
+        private_json(KOKORO, {**kokoro_settings(), 'on': True})
+        if eleven_settings().get('on'): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+        return 'Switched to my Kokoro voice.'
+    if named:
+        want = (named[1] or named[2] or '').lower()
+        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'kokoro', 'a', 'another', 'other', 'different'): return None
+        if want not in KOKORO_VOICES: return f'Kokoro has no voice called {want.title()}. Say “what Kokoro voices do you have” to hear the list.'
+        private_json(KOKORO, {**kokoro_settings(), 'on': True, 'voice': KOKORO_VOICES[want]})
+        if eleven_settings().get('on'): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+        return f'Done. This is {want.title()}.'
+    if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)?(?: kokoro)? voices.*|list(?: the)? kokoro voices", t):
+        return 'Kokoro voices: American: Heart, Bella, Nicole, Sarah, Sky, Nova, River, Jessica, Kore, Aoede, Alloy. British: Emma, Alice, Isabella, Lily.'
+    return None
+
+
 def quick_voice(t):
-    """Voice engine by voice: connect ElevenLabs, pick a voice, list voices, credits left, back to the Mac voice."""
+    """Voice engine by voice: Kokoro or ElevenLabs, pick a voice, list voices, credits left, back to the Mac voice."""
     t = re.sub(r"^(?:(?:ok|okay|hey|friday|please|can you|could you)\s+)+|(?:\s+(?:please|now|friday))+$", '', t).strip()
     t = re.sub(r'\beleven ?labs?\b|\b11 ?labs?\b|\beleven laps\b', 'elevenlabs', t)
+    t = re.sub(r'\b(?:cocoro|kokora|coco ?ro|kokoro\'s|kakoro)\b', 'kokoro', t)
+    if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? (?:mac|ava|normal|built in|built-in|old) voice", t):
+        if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
+    else:
+        answer = quick_kokoro(t)
+        if answer: return answer
     if re.fullmatch(r"(?:connect|set up|setup|link|add|sign in to|log in to)(?: to)? elevenlabs(?: voice)?", t):
         subprocess.Popen(['/bin/sh', ME, '--eleven-connect'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return 'A box is opening for your ElevenLabs key. Paste it there, not here.'
@@ -3596,6 +3641,7 @@ def quick_voice(t):
         private_json(ELEVEN, {**eleven_settings(), 'long': False}); return 'Long readings go back to the Mac voice, to save credits.'
     if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? elevenlabs(?: voice)?", t):
         private_json(ELEVEN, {**eleven_settings(), 'on': True})
+        if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
         return f"Switched to ElevenLabs{', as ' + eleven_settings().get('voice', '') if eleven_settings().get('voice') else ''}."
     m = re.fullmatch(r"(?:use|switch to|try|change to)(?: the)?(?: elevenlabs)? voice(?: called| named)? (.{2,40})|(?:use|switch to|try)(?: the)? (.{2,40}?) (?:elevenlabs )?voice(?: from elevenlabs)?", t)
     if m:
@@ -3607,6 +3653,7 @@ def quick_voice(t):
         found = next(((n, v) for n, v in voices if n.lower() == want), None) or next(((n, v) for n, v in voices if n.lower().startswith(want)), None)
         if not found: return f'There’s no ElevenLabs voice called {want.title()}. Say “what ElevenLabs voices do you have” to hear the list.'
         private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': found[1], 'voice': found[0]})
+        if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
         return f'Done. This is {found[0]}.'
     if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)? (?:elevenlabs )?voices(?: do you have| are there| can you use| are available)?|list(?: the| my)? elevenlabs voices", t):
         try: names = [n for n, _ in eleven_voices()]

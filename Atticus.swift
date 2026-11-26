@@ -2499,7 +2499,7 @@ final class App: NSObject, WKScriptMessageHandler {
         var all = DictationData.words
         all.append("Atticus")
         // F.R.I.D.A.Y: names it kept mishearing — the wake word, its own name, Spotify and the user's playlists
-        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen", "ElevenLabs"]
+        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen", "ElevenLabs", "Kokoro"]
         let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
         all += lists.compactMap { $0["name"] as? String }.prefix(40)
         let fixes = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/friday-fixes.json")))) as? [String: String] ?? [:]
@@ -2586,7 +2586,19 @@ final class App: NSObject, WKScriptMessageHandler {
     var studioClips: [String: VoiceClip] = [:], studioQueue: [String] = [], studioRound = 0, studioBusy = false
     var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
     var studioVoiceID: String?, studioVoiceAt = Date.distantPast, studioNamesShown = ""
-    var studioOn: Bool { elevenOn || Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
+    var studioOn: Bool { kokoroOn || elevenOn || Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
+    // F.R.I.D.A.Y Kokoro voice: free and local. friday_kokoro.py serves 127.0.0.1:3901 (LaunchAgent com.friday.kokoro, set up by
+    // "Install Kokoro Voice"); kokoro.json says {"on", "voice"}. It wins over ElevenLabs when both are on; any failure → the Mac voice.
+    var kokoroCache: (Date, [String: Any])? = nil, kokoroPausedUntil = Date.distantPast
+    var kokoro: [String: Any] {
+        let file = elevenDir + "/kokoro.json"
+        let changed = (try? FileManager.default.attributesOfItem(atPath: file)[.modificationDate] as? Date) ?? .distantPast
+        if let c = kokoroCache, c.0 == changed { return c.1 }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        kokoroCache = (changed, data); return data
+    }
+    var kokoroOn: Bool { kokoro["on"] as? Bool == true && Date() > kokoroPausedUntil }
+    var kokoroVoice: String { let v = kokoro["voice"] as? String ?? ""; return v.range(of: #"^[a-z]{2}_[a-z]{2,12}$"#, options: .regularExpression) != nil ? v : "af_heart" }
     // F.R.I.D.A.Y ElevenLabs voice: `atticus.py --eleven-connect` saves elevenlabs.json ({"on", "voice_id", "voice"}) and
     // elevenlabs.curl (the key as a curl header, 0600, so it never shows in a process list). Any failure — no internet, out of
     // free credits — falls back to the Mac voice through the same path as VoiceStudio; a refusal pauses ElevenLabs for an hour.
@@ -2609,7 +2621,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if let data = try? JSONSerialization.data(withJSONObject: used) { FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600]) }
     }
     var elevenOn: Bool {
-        eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
+        !kokoroOn && eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
             FileManager.default.fileExists(atPath: elevenDir + "/elevenlabs.curl") && Date() > elevenPausedUntil
     }
     static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
@@ -2639,6 +2651,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     // The profile id for the configured name, from VoiceStudio's own list (cached a minute); nil when VoiceStudio has no such profile.
     func studioVoice(_ found: @escaping (String?) -> Void) {
+        if kokoroOn { return found(kokoroVoice) }
         if elevenOn { return found(eleven["voice_id"] as? String) }
         if let id = studioVoiceID, Date().timeIntervalSince(studioVoiceAt) < 60 { return found(id) }
         let wanted = Prefs.str("voiceStudioName").trimmingCharacters(in: .whitespaces).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
@@ -2680,6 +2693,21 @@ final class App: NSObject, WKScriptMessageHandler {
                 self.studioBusy = false
                 for t in self.studioQueue { if let c = self.studioClips[t] { c.done = true; c.waiters.forEach { $0(false) }; c.waiters = [] } }
                 self.studioQueue = []; return
+            }
+            if self.kokoroOn {
+                let body = (try? JSONSerialization.data(withJSONObject: ["input": text, "voice": id])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                self.studioFetch = self.studioCurl(["--max-time", "30", "-o", clip.file, "-w", "%{http_code}", "-H", "Content-Type: application/json",
+                                                    "--data-binary", body, "http://127.0.0.1:3901/v1/audio/speech"]) { [weak self] status, code in
+                    guard let self, round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
+                    self.studioFetch = nil; self.studioBusy = false; self.studioQueue.removeFirst()
+                    let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
+                    clip.ok = status == 0 && code == "200" && size > 1000; clip.done = true
+                    if status == 7 { self.kokoroPausedUntil = Date().addingTimeInterval(60) }   // the helper isn't running: Mac voice for a minute
+                    else if !clip.ok { NSLog("Kokoro failed (curl %d, HTTP %@)", status, code) }
+                    clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
+                    self.studioNext()
+                }
+                return
             }
             if self.elevenOn {
                 let body = (try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": "eleven_flash_v2_5"])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -2727,6 +2755,10 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
     func warmStudio() {
+        if kokoroOn {   // load the model while the user is still talking; the helper drops it after 30 idle minutes
+            guard Date().timeIntervalSince(studioLast) > 300 else { return }
+            studioLast = Date(); _ = studioCurl(["--max-time", "2", "-X", "POST", "http://127.0.0.1:3901/warm"]) { _, _ in }; return
+        }
         guard studioOn, !elevenOn, Date().timeIntervalSince(studioLast) > 600 else { return }
         studioLast = Date()
         studioVoice { [weak self] id in
