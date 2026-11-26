@@ -1655,6 +1655,36 @@ def spotify_play(uri):
     return device
 
 
+# F.R.I.D.A.Y: "play some music" names nothing to search for (searching "recently played" found a song by that title)
+GENERIC_MUSIC = re.compile(r"(?:(?:some|any|my|a little|good|the|your) )*(?:music|songs?|tunes|jams|something|anything|"
+                           r"(?:recently|last) played(?: music| songs| tracks)?|recent (?:music|songs|tracks)|"
+                           r"what i was (?:listening to|playing)|where i left off|my (?:usual|stuff))(?: on spotify| please| for me)*", re.I)
+
+
+def spotify_resume():
+    """Generic "play music": keep playing, else pick up where Spotify left off, else shuffle Liked Songs."""
+    device = spotify_device()
+    where = '' if device.get('type') == 'Computer' else f" on {device.get('name', 'your device')}"
+    def now():
+        item = (spotify_api('GET', '/me/player') or {}).get('item') or {}
+        by = ', '.join(a.get('name', '') for a in item.get('artists') or [] if a.get('name'))
+        return (item.get('name', '') + (f' by {by}' if by else '')) if item.get('name') else ''
+    state = spotify_api('GET', '/me/player') or {}
+    if state.get('is_playing') and now(): return f'Already playing {now()}{where}.'
+    try:
+        spotify_api('PUT', '/me/player/play', None, {'device_id': device['id']})   # no body: resume what this device last played
+        time.sleep(0.6)
+        playing = now()
+        if playing: return f'Picking up where you left off: {playing}{where}.'
+    except SpotifyError: pass   # nothing to resume
+    liked = spotify_find('liked songs', anything=False)
+    if not liked: raise SpotifyError(404, 'nothing to play')
+    spotify_play(liked[0])
+    try: spotify_api('PUT', '/me/player/shuffle', None, {'state': 'true', 'device_id': device['id']})
+    except SpotifyError: pass
+    return f'Shuffling your Liked Songs{where}.'
+
+
 SPOTIFY_ID = re.compile(r'\b[0-9a-f]{32}\b', re.I)
 
 
@@ -1677,6 +1707,10 @@ def spotify_link(text=''):
 
 def spotify_quick(t):
     """Voice commands that need the account: connect, what's playing, move playback to another device."""
+    m = re.fullmatch(r'(?:can you |could you |please )?(?:play|put on|start|throw on|turn on)(?: me)? (.+?)(?: please)?', t)
+    if m and GENERIC_MUSIC.fullmatch(m[1]) and spotify_connected():   # "play some music": no AI needed, nothing to search
+        try: return spotify_resume()
+        except (SpotifyError, OSError, ValueError, KeyError, TypeError): pass
     if (re.search(r'\bspotify\b', t) and re.search(r'\b(?:connect|link|set ?up|hook ?up|sign ?in|log ?in|login|authori[sz]e|pair|integrate)\b', t)
             and not re.search(r'\b(?:play|queue|pause|skip|disconnect|unlink|out)\b', t)) or (SPOTIFY_ID.search(t) and 'spotify' in t):
         fast.cmds = []
@@ -1802,6 +1836,7 @@ def play(name, anything=True):
     """Play the user's playlist by that name; else (anything=True) the top Spotify song, album or artist for it from the web."""
     if spotify_connected():   # F.R.I.D.A.Y: the account's own search, library and player; any failure falls back below
         try:
+            if GENERIC_MUSIC.fullmatch(name.strip().rstrip('.!?')): return spotify_resume()
             found = spotify_find(name, anything)
             if found:
                 device = spotify_play(found[0])
@@ -3193,7 +3228,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played)\b|\d", re.I)
 
 
 def quick_hint(t):
