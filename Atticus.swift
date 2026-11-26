@@ -2723,6 +2723,13 @@ final class App: NSObject, WKScriptMessageHandler {
         } }
         do { try p.run(); voice = p } catch { done() }
     }
+    // F.R.I.D.A.Y: "Which one did you mean? 1: Boston, Massachusetts. 2: Boston, England." (at most six choices are read)
+    static func pickSpeech(_ question: String, _ options: [[String: Any]]) -> String {
+        let labels = options.compactMap { $0["label"] as? String }.filter { !$0.isEmpty }.prefix(6)
+        let list = labels.enumerated().map { "\($0.offset + 1): \($0.element)" }.joined(separator: ". ")
+        let q = question.trimmingCharacters(in: .whitespaces)
+        return list.isEmpty ? q : q + (q.hasSuffix("?") || q.hasSuffix(".") ? " " : ". ") + list + "."
+    }
     var conversing: Bool { handsFree && Prefs.bool("voiceMode") }   // F.R.I.D.A.Y voice mode: a spoken back-and-forth
     var talksBack: Bool { Prefs.bool("speak") || conversing }
     // "bye", "that's all", "thanks, that's it": the conversation is over
@@ -4271,7 +4278,9 @@ final class App: NSObject, WKScriptMessageHandler {
                         guard (3...6).contains(p.count) else { continue }
                         self.retryOffer = p.count >= 5 && p[4] == "retry"
                         self.askNeed = p.count == 6 && !self.retryOffer ? (try? JSONSerialization.jsonObject(with:Data(p[5].utf8))) as? [String:Any] ?? [:] : [:]
-                        self.askFile = p[2]; self.show(); self.js("ask", [p[0], p[1], self.retryOffer ? "retry" : "", self.retryOffer && p.count == 6 ? p[5] : ""]); continue
+                        self.askFile = p[2]; self.show(); self.js("ask", [p[0], p[1], self.retryOffer ? "retry" : "", self.retryOffer && p.count == 6 ? p[5] : ""])
+                        if self.talksBack && !p[0].isEmpty { self.speak(p[0]) }   // F.R.I.D.A.Y: a question on screen is also said
+                        continue
                     }
                     if line.hasPrefix("⚙ ") {   // "⚙ <key> <true|false>": the AI flips one of Atticus's switches; never pause, and Safe mode only on
                         let p = line.split(separator: " ").map(String.init)
@@ -4280,7 +4289,9 @@ final class App: NSObject, WKScriptMessageHandler {
                         continue
                     }
                     if line.hasPrefix("◇ "), let j = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(2).utf8)) as? [String: Any] {   // "which one?": the choices card
-                        self.retryOffer = true; self.askNeed = ["pick": true]; self.askFile = j["a"] as? String ?? ""; self.show(); self.js("pick", j); continue
+                        self.retryOffer = true; self.askNeed = ["pick": true]; self.askFile = j["a"] as? String ?? ""; self.show(); self.js("pick", j)
+                        if self.talksBack, let q = j["q"] as? String { self.speak(App.pickSpeech(q, j["options"] as? [[String: Any]] ?? [])) }   // F.R.I.D.A.Y: say it, so it can be answered by voice
+                        continue
                     }
                     if line.hasPrefix("▤ ") { self.showAgent = String(line.dropFirst(2)); continue }
                     if line.hasPrefix("▥ ") { agentsUI.openView(String(line.dropFirst(2))); continue }
