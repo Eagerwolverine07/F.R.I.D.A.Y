@@ -104,6 +104,17 @@ class RecoveryTests(Base):
         self.connect()
         self.assertEqual(a.quick_voice('is elevenlabs connected'), 'Yes. ElevenLabs is connected, speaking as Alice.')
 
+    def test_credits_estimate_when_balance_is_off_limits(self):
+        self.connect()
+        with open(os.path.join(self.dir, 'elevenlabs-usage.json'), 'w') as f:
+            json.dump({'month': a.datetime.now().strftime('%Y-%m'), 'chars': 1234}, f)
+        with mock.patch.object(a, 'http_json', side_effect=a.SpotifyError(401, 'missing_permissions user_read')):
+            out = a.quick_voice('how many credits left')
+        self.assertIn('about 1,234 credits this month, so roughly 8,766', out); self.assertIn('User: read', out)
+        with mock.patch.object(a, 'http_json', side_effect=OSError('offline')):
+            self.assertTrue(a.quick_voice('how many credits are left').startswith('I couldn’t reach ElevenLabs. By my count'))
+        self.assertIn('func elevenCount(', SWIFT); self.assertIn('if clip.ok { self.elevenCount(text.count) }', SWIFT)
+
 
 class AppTests(unittest.TestCase):
     def test_speaks_through_elevenlabs_with_fallback(self):

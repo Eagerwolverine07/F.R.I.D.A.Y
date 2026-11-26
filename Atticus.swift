@@ -2599,6 +2599,15 @@ final class App: NSObject, WKScriptMessageHandler {
         let data = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         elevenCache = (changed, data); return data
     }
+    // Characters sent this month, so "how many credits are left" has an answer even when the key may not read the balance.
+    func elevenCount(_ n: Int) {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM"; let month = f.string(from: Date())
+        let file = elevenDir + "/elevenlabs-usage.json"
+        var used = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        if used["month"] as? String != month { used = ["month": month, "chars": 0] }
+        used["chars"] = (used["chars"] as? Int ?? 0) + n
+        if let data = try? JSONSerialization.data(withJSONObject: used) { FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600]) }
+    }
     var elevenOn: Bool {
         eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
             FileManager.default.fileExists(atPath: elevenDir + "/elevenlabs.curl") && Date() > elevenPausedUntil
@@ -2681,6 +2690,7 @@ final class App: NSObject, WKScriptMessageHandler {
                     self.studioFetch = nil; self.studioBusy = false; self.studioQueue.removeFirst()
                     let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
                     clip.ok = status == 0 && code == "200" && size > 1000; clip.done = true
+                    if clip.ok { self.elevenCount(text.count) }
                     if ["401", "402", "403", "429"].contains(code) {   // bad key or out of free credits: the Mac voice for an hour, without trying each sentence
                         self.elevenPausedUntil = Date().addingTimeInterval(3600)
                         NSLog("ElevenLabs refused (HTTP %@): Mac voice for an hour", code)

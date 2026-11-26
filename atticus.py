@@ -3602,21 +3602,33 @@ def quick_voice(t):
         want = (m[1] or m[2] or '').strip().strip('"“”').lower()
         if want in ('mac', 'ava', 'normal', 'elevenlabs', 'a different', 'another', 'other'): return None
         try: voices = eleven_voices()
-        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
+        except SpotifyError as e: return 'Your ElevenLabs key isn’t allowed to read your voices. In ElevenLabs, edit the key and turn on Voices: Read.' if e.status in (401, 403) else 'ElevenLabs had a problem just now. Try again in a minute.'
+        except (OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
         found = next(((n, v) for n, v in voices if n.lower() == want), None) or next(((n, v) for n, v in voices if n.lower().startswith(want)), None)
         if not found: return f'There’s no ElevenLabs voice called {want.title()}. Say “what ElevenLabs voices do you have” to hear the list.'
         private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': found[1], 'voice': found[0]})
         return f'Done. This is {found[0]}.'
     if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)? (?:elevenlabs )?voices(?: do you have| are there| can you use| are available)?|list(?: the| my)? elevenlabs voices", t):
         try: names = [n for n, _ in eleven_voices()]
-        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
+        except SpotifyError as e: return 'Your ElevenLabs key isn’t allowed to read your voices. In ElevenLabs, edit the key and turn on Voices: Read.' if e.status in (401, 403) else 'ElevenLabs had a problem just now. Try again in a minute.'
+        except (OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
         return 'Voices you can pick: ' + ', '.join(dict.fromkeys(names)) + '.'
     if re.fullmatch(r"how many (?:elevenlabs )?(?:credits|characters)(?: do (?:i|we) have)?(?: are)?(?: left)?(?: this month)?|(?:elevenlabs )?credits left", t):
-        try: sub = eleven_api('/v1/user/subscription') or {}
-        except (SpotifyError, OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
-        used, limit = sub.get('character_count'), sub.get('character_limit')
-        if not isinstance(used, int) or not isinstance(limit, int) or not limit: return 'ElevenLabs didn’t say.'
-        return f'{max(0, limit - used):,} of {limit:,} credits left this month.'
+        try:
+            sub = eleven_api('/v1/user/subscription') or {}
+            used, limit = sub.get('character_count'), sub.get('character_limit')
+            if isinstance(used, int) and isinstance(limit, int) and limit: return f'{max(0, limit - used):,} of {limit:,} credits left this month.'
+            why = ''
+        except SpotifyError as e: why = 'denied' if e.status in (401, 403) else ''
+        except (OSError, ValueError): why = 'offline'
+        try:   # Atticus.swift counts what it sends: an estimate when the balance can't be read
+            with open(os.path.join(DIR, 'elevenlabs-usage.json')) as f: usage = json.load(f)
+            sent = int(usage.get('chars') or 0) if usage.get('month') == datetime.now().strftime('%Y-%m') else 0
+        except (OSError, ValueError, TypeError, AttributeError): sent = 0
+        estimate = f'By my count I’ve used about {sent:,} credits this month, so roughly {max(0, 10000 - sent):,} of the free 10,000 are left.'
+        if why == 'denied': return estimate + ' For the exact number, turn on “User: read” for the key in ElevenLabs.'
+        if why == 'offline': return 'I couldn’t reach ElevenLabs. ' + estimate
+        return estimate
     return None
 
 
