@@ -8642,14 +8642,29 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(web)
-        poll?.invalidate(); poll = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
-        pulse?.invalidate(); pulse = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in self?.mirror() }
+        wake()
+    }
+    // Hidden, minimized or fully covered: no polling and no animation, so the wake word and hotkey never wait on the HUD.
+    func wake() {
+        guard poll == nil else { return }
+        web?.evaluateJavaScript("control.pause(false)")
+        poll = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
+        pulse = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in self?.mirror() }
+        poll?.tolerance = 1; pulse?.tolerance = 0.1
         refresh()
     }
+    func rest() {
+        poll?.invalidate(); poll = nil; pulse?.invalidate(); pulse = nil
+        web?.evaluateJavaScript("control.pause(true)")
+    }
+    func windowDidChangeOcclusionState(_ n: Notification) { if window?.occlusionState.contains(.visible) == true { wake() } else { rest() } }
+    func windowDidMiniaturize(_ n: Notification) { rest() }
+    func windowDidDeminiaturize(_ n: Notification) { wake() }
     func refresh() {   // one helper at a time; a slow network part is cached on the Python side
         guard !fetching, window?.isVisible == true else { return }
         fetching = true
         let p = py(["--control-state"]), out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        p.qualityOfService = .background   // readings never compete with listening
         p.terminationHandler = { [weak self] _ in
             let data = out.fileHandleForReading.readDataToEndOfFile()
             DispatchQueue.main.async {
@@ -8686,7 +8701,7 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
             send("answer", String(l.dropFirst(2)).replacingOccurrences(of: "\u{2028}", with: "\n"))
         }
     }
-    func windowWillClose(_ n: Notification) { poll?.invalidate(); poll = nil; pulse?.invalidate(); pulse = nil }
+    func windowWillClose(_ n: Notification) { rest() }
 }
 
 let app = App()

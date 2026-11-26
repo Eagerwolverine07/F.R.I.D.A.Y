@@ -3363,7 +3363,7 @@ def control_state():
     """Everything the Control Room shows, as one JSON object. Slow or online parts are cached; a part that fails is left out."""
     state = {'system': control_system()}
     state['weather'] = control_cached('weather', 900, control_weather)
-    state['music'] = control_cached('music', 4, control_music)
+    state['music'] = control_cached('music', 9, control_music)   # Spotify online at most every ~10 s
     state['agents'] = control_agents()
     state['timers'] = [{'label': r['label'], 'left': max(0, round(r['ends'] - time.time()))} for r in sorted(timers(), key=lambda r: r['ends'])[:3]]
     plist = os.path.expanduser(f'~/Library/LaunchAgents/{NEWS_AGENT}.plist')

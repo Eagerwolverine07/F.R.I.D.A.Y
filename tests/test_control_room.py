@@ -89,10 +89,21 @@ class WiringTests(unittest.TestCase):
         show = show[:show.index('\n    }\n')]
         self.assertIn('if controlRoom.showing && !retryOffer && askFile.isEmpty { return }', show)   # a question card still comes up
         self.assertIn('controlRoom.relay(call, arg)', SWIFT[SWIFT.index('    func js(_ call: String, _ arg: Any? = nil) {'):][:200])
-        relay = SWIFT[SWIFT.index('func relay('):SWIFT.index('func windowWillClose(_ n: Notification) { poll')]
+        relay = SWIFT[SWIFT.index('func relay('):SWIFT.index('func windowWillClose(_ n: Notification) { rest() }')]
         for kind in ('"reset"', '"heard"', '"answer"'): self.assertIn(kind, relay)
         self.assertIn('JSONSerialization.data(withJSONObject: [kind, text])', relay)   # words reach the page as data, never as code
         self.assertIn('live(kind, text)', PAGE); self.assertIn('esc(live.heard)', PAGE); self.assertIn('esc(live.answer)', PAGE)
+
+    def test_stays_light_on_the_mac(self):
+        # spinning parts are separate layers turned by the GPU; the ripple only runs while she speaks; hidden means paused
+        self.assertIn('.layer{position:absolute;inset:0;width:100%;height:100%;will-change:transform}', PAGE)
+        self.assertNotIn('<g class="r1">', PAGE)
+        self.assertIn('if (wave.still || document.body.classList.contains(\'paused\')) { wave.running = false; return }', PAGE)
+        self.assertIn('body.paused .layer{animation-play-state:paused}', PAGE); self.assertIn('pause(on)', PAGE)
+        room = SWIFT[SWIFT.index('final class ControlRoom'):SWIFT.index('let app = App()')]
+        for piece in ('windowDidChangeOcclusionState', 'windowDidMiniaturize', 'p.qualityOfService = .background', 'withTimeInterval: 5,'):
+            self.assertIn(piece, room)
+        self.assertIn("control_cached('music', 9,", open(os.path.join(ROOT, 'atticus.py')).read())
 
 
 if __name__ == '__main__':
