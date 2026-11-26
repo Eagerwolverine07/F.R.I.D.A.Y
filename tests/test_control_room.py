@@ -130,6 +130,16 @@ class WiringTests(unittest.TestCase):
         self.assertIn('["full", "exit", "close"].contains(CommandLine.arguments[2])', SWIFT)
         self.assertIn('"Control Room", "full screen"]', SWIFT)
 
+    def test_unclear_it_goes_to_the_ai_instead_of_a_guess(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(a, 'DIR', d), mock.patch.object(a, 'LAST', os.path.join(d, 'last')), \
+             mock.patch.object(a, 'front', return_value=('Finder', '')):
+            self.assertEqual(a.move_target('move it left')[0], 'Finder')   # Control Room closed: "it" is the app in front, as before
+            open(os.path.join(d, 'control-open'), 'w').close()
+            self.assertIsNone(a.move_target('move it left'))   # looking at the Control Room: unclear, so the AI asks which window
+            with open(os.path.join(d, 'last'), 'w') as f: f.write('Safari')
+            self.assertEqual(a.move_target('move it left')[0], 'Safari')   # just moved Safari: "it" is still Safari
+        self.assertIn('what "it" is, a misheard word', a.ASK_ME)
+
 
 if __name__ == '__main__':
     unittest.main()

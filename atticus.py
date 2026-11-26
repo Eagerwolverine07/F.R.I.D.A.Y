@@ -579,8 +579,8 @@ Voice mode: replies are read aloud and the user answers by voice. Talk like a wa
 
 # Ask me when unsure (always on): a choices card in the box instead of a guess
 ASK_ME = f"""
-Ask, don't guess: unsure about anything that changes what you do (which file, app, song or person, which meaning, a missing detail)? Never choose
-yourself (not even the newest) and never ask in words: run {PICK} "<question>" "<option>"... (2-8 short options; full paths for files), then act on the one it prints."""
+Ask, don't guess: unsure of anything that changes your action (which file/app/window/song/person, what "it" is, a misheard word, missing detail)? Never choose
+yourself (not even the newest) nor ask in words: run {PICK} "<question>" "<option>"... (2-8 short options; full paths for files); act on the printed one."""
 
 POINTER = """
 Show me where (on): for where/how asks about the screen, even if known, use a labeled picture (--look if none), answer in one line, then end with
@@ -2652,7 +2652,9 @@ def move_target(t):
     if not who:
         return None
     if who in ('it', 'that', 'this', 'window', 'that window', 'this window'):
-        app = Path(LAST).read_text().strip() if os.path.exists(LAST) and time.time() - os.path.getmtime(LAST) < 600 else front()[0]
+        recent = os.path.exists(LAST) and time.time() - os.path.getmtime(LAST) < 600
+        if not recent and control_open(): return None   # F.R.I.D.A.Y: looking at the Control Room, "it" is unclear: the AI asks which window
+        app = Path(LAST).read_text().strip() if recent else front()[0]
     else:
         app = app_named(who)
         if not app:
