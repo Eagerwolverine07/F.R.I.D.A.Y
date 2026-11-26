@@ -3371,7 +3371,7 @@ def control_state():
         with open(plist, 'rb') as f: when = plistlib.load(f).get('StartCalendarInterval', {})
         state['briefing'] = clock(datetime.now().replace(hour=int(when.get('Hour', 9)), minute=int(when.get('Minute', 0))))
     except (OSError, ValueError, plistlib.InvalidFileException): state['briefing'] = ''
-    turns = [r for r in read_rows(os.path.join(DIR, 'log.jsonl')) if isinstance(r.get('task'), str) and isinstance(r.get('reply'), str) and r['reply']][-4:]
+    turns = [r for r in read_rows(os.path.join(DIR, 'log.jsonl')) if isinstance(r.get('task'), str) and isinstance(r.get('reply'), str) and r['reply']][-10:]
     state['transcript'] = [{'you': r['task'][:200], 'friday': r['reply'][:400]} for r in turns]
     return state
 

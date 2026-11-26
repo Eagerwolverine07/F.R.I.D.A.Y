@@ -46,7 +46,7 @@ class StateTests(unittest.TestCase):
              mock.patch.object(a, 'spotify_connected', return_value=False), mock.patch.object(a, 'timers', return_value=[{'label': 'tea', 'ends': time.time() + 90}]):
             state = json.loads(json.dumps(a.control_state()))
         self.assertEqual(state['system'], {})
-        self.assertEqual([r['you'] for r in state['transcript']], ['q2', 'q3', 'q4', 'q5'])
+        self.assertEqual([r['you'] for r in state['transcript']], ['q0', 'q1', 'q2', 'q3', 'q4', 'q5'])
         self.assertEqual(state['agents'][0]['title'], 'Inbox triage')
         self.assertEqual(state['timers'][0]['label'], 'tea'); self.assertIn(state['timers'][0]['left'], (89, 90))
         self.assertEqual(state['music'], {'connected': False})
@@ -79,6 +79,7 @@ class WiringTests(unittest.TestCase):
 
     def test_page_escapes_text_and_has_hooks(self):
         self.assertIn('window.control = {', PAGE); self.assertIn('update(s)', PAGE); self.assertIn('mode(name)', PAGE)
+        self.assertIn('.scroll{flex:1;min-height:0;overflow-y:auto', PAGE); self.assertEqual(PAGE.count('stick(wasBottom)'), 2)   # transcript follows the newest line
         self.assertIn('id="wave"', PAGE); self.assertIn("wave.target = name === 'talk' ? 12 : 0", PAGE)   # the outer ring ripples only while she speaks
         self.assertIn("prefers-reduced-motion: reduce)').matches", PAGE)
         for field in ('r.you', 'r.friday', 'r.title.toUpperCase()', 'r.label.toUpperCase()'):
