@@ -3516,8 +3516,28 @@ def eleven_voices(key=None):
     return [(str(v.get('name', '')).split(' - ')[0].strip(), v['voice_id']) for v in rows if isinstance(v, dict) and v.get('voice_id')]
 
 
+ELEVEN_DEFAULTS = [('Alice', 'Xb7hH8MSUJpSbSDYk0k2'), ('Matilda', 'XrExE9yKIg1WjnnlVkGX'), ('Rachel', '21m00Tcm4TlvDq8ikWAM')]   # ElevenLabs' public premade voices
+
+
 def eleven_notify(message):
+    """The connection result, shown and said aloud (an easy-to-miss banner alone hid a failed key), and kept for "is ElevenLabs connected"."""
+    private_json(os.path.join(DIR, 'elevenlabs-status.json'), {'at': time.time(), 'message': message})
     subprocess.run(['osascript', '-e', f'display notification {json.dumps(message)} with title "F.R.I.D.A.Y voice"'], capture_output=True)
+    subprocess.run(['say', message], capture_output=True)
+
+
+def eleven_try_speech(key):
+    """For a key allowed to speak but not to list voices: a two-word sample with a public voice. (name, id) that worked, or None."""
+    for name, voice_id in ELEVEN_DEFAULTS:
+        try:
+            r = subprocess.run(['/usr/bin/curl', '-q', '--silent', '--max-time', '15', '-o', '/dev/null', '-w', '%{http_code}', '-K', '-',
+                                '-H', 'Content-Type: application/json', '--data-binary', json.dumps({'text': 'Hi boss.', 'model_id': 'eleven_flash_v2_5'}),
+                                f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}'], input=f'header = "xi-api-key: {key}"\n',
+                               capture_output=True, text=True, timeout=20)   # the key goes in on stdin, never on the command line
+        except (OSError, subprocess.SubprocessError): return None
+        if r.stdout.strip() == '200': return name, voice_id
+        if r.stdout.strip() in ('401', '403'): return None
+    return None
 
 
 def eleven_connect():
@@ -3529,20 +3549,25 @@ def eleven_connect():
     if not key: return   # cancelled
     if not re.fullmatch(r'[A-Za-z0-9_\-]{20,200}', key):
         return eleven_notify('That doesn’t look like an ElevenLabs key. Copy it again from ElevenLabs → Developers → API Keys.')
-    try: voices = eleven_voices(key)
+    try:
+        voices = eleven_voices(key)
+        names = {n.lower(): (n, v) for n, v in voices}
+        picked = next((names[f.lower()] for f in ELEVEN_FAVORITES if f.lower() in names), voices[0] if voices else None)
     except SpotifyError as e:
-        return eleven_notify('ElevenLabs didn’t accept that key.' if e.status in (401, 403) else f'ElevenLabs said no (error {e.status}). Try again in a minute.')
+        if e.status not in (401, 403): return eleven_notify(f'ElevenLabs said no, error {e.status}. Try again in a minute.')
+        picked = eleven_try_speech(key)   # many keys may speak but not list voices
+        if not picked:
+            return eleven_notify('ElevenLabs didn’t accept that key. Make a new key with the Text to Speech permission turned on, then say connect ElevenLabs again.')
     except (OSError, ValueError):
         return eleven_notify('I couldn’t reach ElevenLabs. Check the internet connection and try again.')
-    if not voices: return eleven_notify('The key works, but the account has no voices yet.')
-    names = {n.lower(): (n, v) for n, v in voices}
-    name, voice_id = next((names[f.lower()] for f in ELEVEN_FAVORITES if f.lower() in names), voices[0])
+    if not picked: return eleven_notify('The key works, but the account has no voices yet.')
+    name, voice_id = picked
     os.makedirs(DIR, exist_ok=True)
     fd = os.open(ELEVEN_CURL, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as f: f.write(f'header = "xi-api-key: {key}"\n')
     os.chmod(ELEVEN_CURL, 0o600)
     private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': voice_id, 'voice': name})
-    eleven_notify(f'Connected. I now speak as {name}. Say “use the ElevenLabs voice …” to try another.')
+    eleven_notify(f'Connected. I now speak as {name}.')
 
 
 def quick_voice(t):
@@ -3555,8 +3580,14 @@ def quick_voice(t):
     if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? (?:mac|ava|normal|built in|built-in|old) voice", t):
         if eleven_settings(): private_json(ELEVEN, {**eleven_settings(), 'on': False})
         return 'Back to the Mac voice.'
+    if re.fullmatch(r"(?:is|are you)(?: the)? (?:elevenlabs|connected to elevenlabs|elevenlabs connected)(?: connected| working| set up)?|did (?:the |my )?elevenlabs(?: key)? (?:connect|work|save)|(?:is|are) you using elevenlabs", t):
+        if eleven_key(): return f"Yes. ElevenLabs is connected{', speaking as ' + eleven_settings().get('voice', '') if eleven_settings().get('on') else ', but I’m using the Mac voice right now'}."
+        try:
+            with open(os.path.join(DIR, 'elevenlabs-status.json')) as f: last = json.load(f).get('message', '')
+        except (OSError, ValueError, AttributeError): last = ''
+        return 'Not yet.' + (f' Last time: {last}' if last else ' Say “connect ElevenLabs”.')
     if not eleven_key():
-        if re.search(r'\belevenlabs\b', t) and re.fullmatch(r"(?:use|switch to|try)(?: the)? elevenlabs(?: voice)?.*|(?:what|which|list)(?: are)?(?: the| my)? elevenlabs voices.*|how many (?:elevenlabs )?credits.*", t):
+        if re.fullmatch(r"(?:use|switch to|try)(?: the)? elevenlabs(?: voice)?.*|(?:what|which|list)(?: are)?(?: the| my)?(?: elevenlabs)? voices.*|how many (?:elevenlabs )?(?:credits|characters).*|(?:elevenlabs )?credits left", t):
             return 'ElevenLabs isn’t connected yet. Say “connect ElevenLabs” first.'
         return None
     if re.fullmatch(r"(?:use|read) elevenlabs (?:for|on) (?:long|longer) (?:answers|replies|readings|briefings)(?: too)?|(?:read|use elevenlabs for) (?:the |my )?briefings?(?: with elevenlabs)?(?: too)?", t):
