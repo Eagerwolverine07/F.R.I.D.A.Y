@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>F.R.I.D.A.Y Control Room</title>
+<!-- F.R.I.D.A.Y Control Room: Atticus.swift's ControlRoom fills it with control.update(state) and control.mode(name). -->
+<style>
+:root{--bg:#0e0907;--panel:#170e0a;--track:#2a1910;--rule:#4a2a18;--edge:#8a4a22;--glow:#ff8a3d;--gold:#ffb454;--rose:#ff4f6d;--text:#fbe9d8;--soft:#c99a7c;--dim:#a87454}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:"SF Mono",Menlo,ui-monospace,monospace;overflow:hidden;-webkit-user-select:none}
+.wrap{height:100%;padding:24px 36px 26px;display:flex;flex-direction:column;gap:16px;position:relative}
+.corner{position:absolute;width:54px;height:54px;border-color:var(--glow);border-style:solid;border-width:0}
+.tl{left:18px;top:14px;border-left-width:2px;border-top-width:2px}.tr{right:18px;top:14px;border-right-width:2px;border-top-width:2px}
+.bl{left:18px;bottom:14px;border-left-width:2px;border-bottom-width:2px}.br{right:18px;bottom:14px;border-right-width:2px;border-bottom-width:2px}
+header{text-align:center}
+h1{margin:0;font:500 34px/1.1 "Avenir Next Condensed","Helvetica Neue",sans-serif;letter-spacing:24px;margin-right:-24px;color:var(--gold)}
+.sub{font-size:11px;letter-spacing:6px;color:var(--dim);margin-top:6px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr) minmax(250px,390px);gap:24px}
+.col{display:flex;flex-direction:column;gap:14px;min-height:0}
+section{border:1px solid var(--edge);border-radius:6px;padding:14px 16px;background:var(--panel);min-height:0}
+h2{margin:0 0 10px;font-size:12px;font-weight:400;letter-spacing:4px;color:var(--gold);border-bottom:1px solid var(--rule);padding-bottom:7px;display:flex;justify-content:space-between}
+h2 small{font-size:11px;letter-spacing:2px;color:var(--rose)}
+.meters{display:grid;grid-template-columns:42px 1fr 40px;gap:9px;align-items:center;font-size:11px;color:var(--soft)}
+.bar{height:7px;background:var(--track);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--rose);border-radius:4px;transition:width .6s}
+.bar.cool i{background:var(--gold)} .num{text-align:right;color:var(--text)}
+.clock{font-size:34px;color:var(--gold);letter-spacing:3px;margin-top:12px}.date{font-size:11px;letter-spacing:3px;color:var(--dim)}
+.big{font-size:32px}.muted{color:var(--dim);font-size:11px;letter-spacing:2px}
+.row{display:flex;justify-content:space-between;gap:10px;font-size:12px}
+.song{font:600 17px "Avenir Next","Helvetica Neue",sans-serif;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:0}
+.center svg{width:min(100%,62vh);height:auto}
+#mode{font-size:16px;letter-spacing:10px;margin-right:-10px;color:var(--gold)}
+@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{0%,100%{opacity:.85;transform:scale(1)}50%{opacity:1;transform:scale(1.08)}}
+.r1,.r2,.r3,.r2b,.core,.lvl{transform-origin:260px 260px;transform-box:view-box}
+.r1{animation:spin 40s linear infinite}.r2{animation:spin 24s linear infinite reverse}.r3{animation:spin 12s linear infinite}.r2b{animation:spin 8s linear infinite reverse}
+.core{animation:pulse 2.4s ease-in-out infinite}.lvl{animation:pulse 3s ease-in-out infinite}
+body.busy .r3{animation-duration:3s}body.busy .r2b{animation-duration:2s}
+body.hear .lvl,body.talk .lvl{animation-duration:.5s}body.talk .core{animation-duration:.8s}
+.talk-log{display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.5;overflow:auto;max-height:100%}
+.talk-log p{margin:0}.you{color:var(--soft)}.fri{color:var(--text)}
+#agents{display:flex;flex-direction:column;gap:10px;font-size:12px}
+.empty{color:var(--dim);font-size:12px}
+form{display:flex;align-items:center;gap:12px;border:1px solid var(--glow);border-radius:8px;padding:0 18px;height:52px;background:var(--panel)}
+form span{color:var(--gold);font-size:19px}
+input{flex:1;background:transparent;border:0;outline:none;color:var(--text);font:15px "SF Mono",Menlo,monospace;letter-spacing:1px}
+input::placeholder{color:var(--dim)}
+@media (prefers-reduced-motion:reduce){.r1,.r2,.r3,.r2b,.core,.lvl{animation:none}}
+</style></head>
+<body>
+<div class="wrap">
+<div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+<header><h1>F.R.I.D.A.Y.</h1><div class="sub">CONTROL ROOM · ALL SYSTEMS NOMINAL</div></header>
+<main>
+<div class="col">
+<section><h2>SYSTEM</h2>
+<div class="meters">
+<span>CPU</span><div class="bar"><i id="cpu" style="width:0"></i></div><span class="num" id="cpuN">–</span>
+<span>MEM</span><div class="bar"><i id="mem" style="width:0"></i></div><span class="num" id="memN">–</span>
+<span>BATT</span><div class="bar cool"><i id="bat" style="width:0"></i></div><span class="num" id="batN">–</span>
+</div>
+<div class="clock" id="clock">--:--:--</div><div class="date" id="date"></div></section>
+<section><h2>WEATHER <small id="place"></small></h2>
+<div class="row" style="align-items:baseline;justify-content:flex-start;gap:12px"><span class="big" id="temp">–</span><span class="muted" id="sky">LOADING</span></div>
+<div class="row muted" id="days" style="margin-top:9px"></div></section>
+<section><h2>NOW PLAYING</h2>
+<div class="song" id="song">Nothing playing</div><div class="muted" id="artist">SAY “PLAY SOME MUSIC”</div>
+<div class="bar cool" style="height:4px;margin-top:11px"><i id="prog" style="width:0"></i></div>
+<div class="row muted" style="margin-top:5px"><span id="at"></span><span id="len"></span></div></section>
+</div>
+<div class="center">
+<svg viewBox="0 0 520 520" aria-hidden="true">
+<circle cx="260" cy="260" r="246" fill="none" stroke="#8a4a22" stroke-width="1" stroke-dasharray="2 9"/>
+<g class="r1"><circle cx="260" cy="260" r="226" fill="none" stroke="#ff8a3d" stroke-width="10" stroke-dasharray="34 22 8 22"/></g>
+<path d="M 260 34 A 226 226 0 0 1 452 140" fill="none" stroke="#ff4f6d" stroke-width="3"/>
+<g class="r2"><circle cx="260" cy="260" r="196" fill="none" stroke="#c2652a" stroke-width="2" stroke-dasharray="1 7"/><circle cx="260" cy="260" r="182" fill="none" stroke="#ff8a3d" stroke-width="6" stroke-dasharray="60 30"/></g>
+<g class="r3"><circle cx="260" cy="260" r="150" fill="none" stroke="#ffb454" stroke-width="1.5" stroke-dasharray="90 18 4 18"/></g>
+<circle cx="260" cy="260" r="100" fill="#1f120c" stroke="#8a4a22" stroke-width="1"/>
+<g class="lvl"><line x1="260.0" y1="156.0" x2="260.0" y2="142.0" stroke="#ff4f6d" stroke-width="3" stroke-linecap="round"/><line x1="270.9" y1="156.6" x2="272.8" y2="138.4" stroke="#ff4f6d" stroke-width="3" stroke-linecap="round"/><line x1="281.6" y1="158.3" x2="285.4" y2="140.6" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="292.1" y1="161.1" x2="295.4" y2="151.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="302.3" y1="165.0" x2="305.8" y2="157.2" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="312.0" y1="169.9" x2="320.9" y2="154.5" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="321.1" y1="175.9" x2="329.7" y2="164.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="329.6" y1="182.7" x2="335.1" y2="176.6" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="337.3" y1="190.4" x2="351.4" y2="177.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="344.1" y1="198.9" x2="361.4" y2="186.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="350.1" y1="208.0" x2="366.4" y2="198.6" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="355.0" y1="217.7" x2="365.8" y2="212.9" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="358.9" y1="227.9" x2="370.0" y2="224.2" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="361.7" y1="238.4" x2="370.6" y2="236.5" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="363.4" y1="249.1" x2="371.6" y2="248.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="364.0" y1="260.0" x2="386.4" y2="260.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="363.4" y1="270.9" x2="384.0" y2="273.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="361.7" y1="281.6" x2="375.0" y2="284.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="358.9" y1="292.1" x2="372.4" y2="296.5" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="355.0" y1="302.3" x2="371.6" y2="309.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="350.1" y1="312.0" x2="366.2" y2="321.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="344.1" y1="321.1" x2="350.7" y2="325.9" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="337.3" y1="329.6" x2="345.6" y2="337.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="329.6" y1="337.3" x2="340.4" y2="349.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="321.1" y1="344.1" x2="328.5" y2="354.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="312.0" y1="350.1" x2="322.4" y2="368.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="302.3" y1="355.0" x2="311.1" y2="374.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="292.1" y1="358.9" x2="297.3" y2="374.8" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="281.6" y1="361.7" x2="283.4" y2="370.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="270.9" y1="363.4" x2="272.0" y2="374.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="260.0" y1="364.0" x2="260.0" y2="379.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="249.1" y1="363.4" x2="248.0" y2="373.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="238.4" y1="361.7" x2="235.6" y2="374.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="227.9" y1="358.9" x2="221.4" y2="378.9" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="217.7" y1="355.0" x2="210.3" y2="371.6" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="208.0" y1="350.1" x2="200.5" y2="363.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="198.9" y1="344.1" x2="189.2" y2="357.5" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="190.4" y1="337.3" x2="181.2" y2="347.5" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="182.7" y1="329.6" x2="176.5" y2="335.2" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="175.9" y1="321.1" x2="167.7" y2="327.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="169.9" y1="312.0" x2="150.4" y2="323.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="165.0" y1="302.3" x2="149.8" y2="309.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="161.1" y1="292.1" x2="152.2" y2="295.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="158.3" y1="281.6" x2="139.2" y2="285.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="156.6" y1="270.9" x2="137.5" y2="272.9" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="156.0" y1="260.0" x2="139.2" y2="260.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="156.6" y1="249.1" x2="146.7" y2="248.1" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="158.3" y1="238.4" x2="148.9" y2="236.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="161.1" y1="227.9" x2="149.1" y2="224.0" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="165.0" y1="217.7" x2="156.6" y2="213.9" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="169.9" y1="208.0" x2="148.1" y2="195.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="175.9" y1="198.9" x2="158.7" y2="186.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="182.7" y1="190.4" x2="173.7" y2="182.3" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="190.4" y1="182.7" x2="181.4" y2="172.7" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="198.9" y1="175.9" x2="190.7" y2="164.6" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="208.0" y1="169.9" x2="200.7" y2="157.2" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="217.7" y1="165.0" x2="214.2" y2="157.2" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="227.9" y1="161.1" x2="223.1" y2="146.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="238.4" y1="158.3" x2="234.4" y2="139.4" stroke="#ffb454" stroke-width="3" stroke-linecap="round"/><line x1="249.1" y1="156.6" x2="247.9" y2="144.5" stroke="#ff4f6d" stroke-width="3" stroke-linecap="round"/></g><line x1="352.0" y1="260.0" x2="358.0" y2="260.0" stroke="#8a4a22" stroke-width="1"/><line x1="350.6" y1="276.0" x2="356.5" y2="277.0" stroke="#8a4a22" stroke-width="1"/><line x1="346.5" y1="291.5" x2="352.1" y2="293.5" stroke="#8a4a22" stroke-width="1"/><line x1="339.7" y1="306.0" x2="344.9" y2="309.0" stroke="#8a4a22" stroke-width="1"/><line x1="330.5" y1="319.1" x2="335.1" y2="323.0" stroke="#8a4a22" stroke-width="1"/><line x1="319.1" y1="330.5" x2="323.0" y2="335.1" stroke="#8a4a22" stroke-width="1"/><line x1="306.0" y1="339.7" x2="309.0" y2="344.9" stroke="#8a4a22" stroke-width="1"/><line x1="291.5" y1="346.5" x2="293.5" y2="352.1" stroke="#8a4a22" stroke-width="1"/><line x1="276.0" y1="350.6" x2="277.0" y2="356.5" stroke="#8a4a22" stroke-width="1"/><line x1="260.0" y1="352.0" x2="260.0" y2="358.0" stroke="#8a4a22" stroke-width="1"/><line x1="244.0" y1="350.6" x2="243.0" y2="356.5" stroke="#8a4a22" stroke-width="1"/><line x1="228.5" y1="346.5" x2="226.5" y2="352.1" stroke="#8a4a22" stroke-width="1"/><line x1="214.0" y1="339.7" x2="211.0" y2="344.9" stroke="#8a4a22" stroke-width="1"/><line x1="200.9" y1="330.5" x2="197.0" y2="335.1" stroke="#8a4a22" stroke-width="1"/><line x1="189.5" y1="319.1" x2="184.9" y2="323.0" stroke="#8a4a22" stroke-width="1"/><line x1="180.3" y1="306.0" x2="175.1" y2="309.0" stroke="#8a4a22" stroke-width="1"/><line x1="173.5" y1="291.5" x2="167.9" y2="293.5" stroke="#8a4a22" stroke-width="1"/><line x1="169.4" y1="276.0" x2="163.5" y2="277.0" stroke="#8a4a22" stroke-width="1"/><line x1="168.0" y1="260.0" x2="162.0" y2="260.0" stroke="#8a4a22" stroke-width="1"/><line x1="169.4" y1="244.0" x2="163.5" y2="243.0" stroke="#8a4a22" stroke-width="1"/><line x1="173.5" y1="228.5" x2="167.9" y2="226.5" stroke="#8a4a22" stroke-width="1"/><line x1="180.3" y1="214.0" x2="175.1" y2="211.0" stroke="#8a4a22" stroke-width="1"/><line x1="189.5" y1="200.9" x2="184.9" y2="197.0" stroke="#8a4a22" stroke-width="1"/><line x1="200.9" y1="189.5" x2="197.0" y2="184.9" stroke="#8a4a22" stroke-width="1"/><line x1="214.0" y1="180.3" x2="211.0" y2="175.1" stroke="#8a4a22" stroke-width="1"/><line x1="228.5" y1="173.5" x2="226.5" y2="167.9" stroke="#8a4a22" stroke-width="1"/><line x1="244.0" y1="169.4" x2="243.0" y2="163.5" stroke="#8a4a22" stroke-width="1"/><line x1="260.0" y1="168.0" x2="260.0" y2="162.0" stroke="#8a4a22" stroke-width="1"/><line x1="276.0" y1="169.4" x2="277.0" y2="163.5" stroke="#8a4a22" stroke-width="1"/><line x1="291.5" y1="173.5" x2="293.5" y2="167.9" stroke="#8a4a22" stroke-width="1"/><line x1="306.0" y1="180.3" x2="309.0" y2="175.1" stroke="#8a4a22" stroke-width="1"/><line x1="319.1" y1="189.5" x2="323.0" y2="184.9" stroke="#8a4a22" stroke-width="1"/><line x1="330.5" y1="200.9" x2="335.1" y2="197.0" stroke="#8a4a22" stroke-width="1"/><line x1="339.7" y1="214.0" x2="344.9" y2="211.0" stroke="#8a4a22" stroke-width="1"/><line x1="346.5" y1="228.5" x2="352.1" y2="226.5" stroke="#8a4a22" stroke-width="1"/><line x1="350.6" y1="244.0" x2="356.5" y2="243.0" stroke="#8a4a22" stroke-width="1"/>
+<g class="r3"><path d="M 273.9 181.2 A 80 80 0 0 1 338.8 273.9" fill="none" stroke="#ff8a3d" stroke-width="7" stroke-linecap="round"/><path d="M 321.3 311.4 A 80 80 0 0 1 208.6 321.3" fill="none" stroke="#ff8a3d" stroke-width="7" stroke-linecap="round"/><path d="M 184.8 287.4 A 80 80 0 0 1 232.6 184.8" fill="none" stroke="#ff8a3d" stroke-width="7" stroke-linecap="round"/></g><g class="r2b"><path d="M 281.9 199.9 A 64 64 0 0 1 320.1 238.1" fill="none" stroke="#ffd38a" stroke-width="3"/><path d="M 320.1 281.9 A 64 64 0 0 1 281.9 320.1" fill="none" stroke="#ffd38a" stroke-width="3"/><path d="M 238.1 320.1 A 64 64 0 0 1 199.9 281.9" fill="none" stroke="#ffd38a" stroke-width="3"/><path d="M 199.9 238.1 A 64 64 0 0 1 238.1 199.9" fill="none" stroke="#ffd38a" stroke-width="3"/></g>
+<circle cx="260" cy="260" r="50" fill="#2e190f" stroke="#ff8a3d" stroke-width="1"/>
+<g class="core"><circle cx="260" cy="260" r="40" fill="#ff7a2f" opacity=".3"/><circle cx="260" cy="260" r="26" fill="#ffd38a"/><circle cx="260" cy="260" r="13" fill="#fff6e8"/></g>
+</svg>
+<div id="mode">STANDING BY</div><div class="muted" id="hint">SAY “FRIDAY” OR USE YOUR SHORTCUT</div>
+</div>
+<div class="col">
+<section style="flex:1.2;display:flex;flex-direction:column"><h2>TRANSCRIPT</h2><div class="talk-log" id="talk"><p class="empty">Nothing yet today.</p></div></section>
+<section style="flex:1"><h2>AGENTS <small id="running"></small></h2><div id="agents"><p class="empty">No agents running.</p></div></section>
+</div>
+</main>
+<form id="ask"><span aria-hidden="true">›</span><input id="text" aria-label="Ask F.R.I.D.A.Y" placeholder="Type to ask, or just say “Friday”…   (Enter to send · Esc to close)" autocomplete="off"></form>
+</div>
+<script>
+const $ = id => document.getElementById(id)
+const post = m => window.webkit?.messageHandlers?.control?.postMessage(m)
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const mmss = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') }
+function tick() {
+  const d = new Date()
+  $('clock').textContent = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false})
+  $('date').textContent = d.toLocaleDateString([], {weekday:'short', day:'2-digit', month:'short', year:'numeric'}).toUpperCase().replace(/,/g, '')
+}
+setInterval(tick, 1000); tick()
+function meter(id, v) { if (v == null) return; $(id).style.width = v + '%'; $(id + 'N').textContent = v + '%' }
+window.control = {
+  update(s) {
+    const sys = s.system || {}; meter('cpu', sys.cpu); meter('mem', sys.memory)
+    if (sys.battery != null) { $('bat').style.width = sys.battery + '%'; $('batN').textContent = sys.battery + '%' }
+    const w = s.weather
+    if (w && w.temp != null) {
+      $('temp').textContent = w.temp + '°' + w.unit; $('sky').textContent = w.sky || ''; $('place').textContent = (w.place || '').toUpperCase()
+      $('days').innerHTML = (w.days || []).map(d => `<span>${esc(d.day)} ${esc(d.high)}°</span>`).join('')
+    } else if (w === null) $('sky').textContent = 'OFFLINE'
+    const m = s.music || {}
+    if (m.title) {
+      $('song').textContent = m.title; $('artist').textContent = (m.artist || '').toUpperCase() + (m.playing ? ' · SPOTIFY' : ' · PAUSED')
+      $('prog').style.width = (m.length ? Math.min(100, m.at / m.length * 100) : 0) + '%'; $('at').textContent = mmss(m.at); $('len').textContent = mmss(m.length)
+    } else {
+      $('song').textContent = 'Nothing playing'; $('artist').textContent = m.connected === false ? 'SPOTIFY NOT CONNECTED' : 'SAY “PLAY SOME MUSIC”'
+      $('prog').style.width = '0'; $('at').textContent = $('len').textContent = ''
+    }
+    const t = s.transcript || []
+    $('talk').innerHTML = t.length ? t.map(r => `<p class="you">YOU › ${esc(r.you)}</p><p class="fri">» ${esc(r.friday)}</p>`).join('') : '<p class="empty">Nothing yet today.</p>'
+    $('talk').scrollTop = $('talk').scrollHeight
+    const a = s.agents || [], timers = s.timers || [], live = a.filter(r => r.status !== 'done').length + timers.length
+    $('running').textContent = live ? live + ' RUNNING' : ''
+    const rows = a.map(r => `<div class="row"><span>${esc(r.title.toUpperCase())}</span><span style="color:var(${r.status === 'done' ? '--dim' : r.status === 'needs-you' ? '--rose' : '--gold'})">${esc(r.status === 'needs-you' ? 'NEEDS YOU' : r.status === 'done' ? 'DONE' : (r.step || r.status).toUpperCase().slice(0, 28))}</span></div>`)
+      .concat(timers.map(r => `<div class="row"><span>TIMER · ${esc(r.label.toUpperCase())}</span><span style="color:var(--gold)">${mmss(r.left * 1000)} LEFT</span></div>`))
+      .concat(s.briefing ? [`<div class="row" style="color:var(--dim)"><span>DAILY BRIEFING</span><span>${esc(s.briefing)}</span></div>`] : [])
+    $('agents').innerHTML = rows.length ? rows.join('') : '<p class="empty">No agents running.</p>'
+  },
+  mode(name) {   // standby, hear, busy, talk
+    document.body.className = name
+    $('mode').textContent = {hear:'LISTENING', busy:'THINKING', talk:'SPEAKING'}[name] || 'STANDING BY'
+  },
+}
+$('ask').addEventListener('submit', e => { e.preventDefault(); const t = $('text').value.trim(); if (t) { post({send:t}); $('text').value = '' } })
+document.addEventListener('keydown', e => { if (e.key === 'Escape') post({close:true}) })
+post({ready:true})
+</script>
+</body></html>

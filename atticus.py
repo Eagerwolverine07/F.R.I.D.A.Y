@@ -3228,7 +3228,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3284,11 +3284,112 @@ def quick_hearing_fix(t):
     return f"Got it. When I hear {heard}, I'll take it as {meant}."
 
 
+
+# ---- F.R.I.D.A.Y Control Room: the full-screen HUD's live readings (Atticus.swift polls --control-state while it is open) ----
+def control_cached(name, ttl, make):
+    """make() at most once per ttl seconds; the last good value is kept when it fails."""
+    path = os.path.join(DIR, 'control-' + name + '.json')
+    try:
+        if time.time() - os.path.getmtime(path) < ttl:
+            with open(path) as f: return json.load(f)
+    except (OSError, ValueError): pass
+    try: value = make()
+    except Exception: value = None
+    if value is None:
+        try:
+            with open(path) as f: return json.load(f)
+        except (OSError, ValueError): return None
+    private_json(path, value)
+    return value
+
+
+def control_system():
+    out = {}
+    try:
+        m = re.search(r'(\d+)%', subprocess.run(['pmset', '-g', 'batt'], capture_output=True, text=True, timeout=3).stdout)
+        if m: out['battery'] = int(m[1])
+    except (OSError, subprocess.SubprocessError): pass
+    try:
+        total = sum(float(x) for x in subprocess.run(['ps', '-A', '-o', '%cpu='], capture_output=True, text=True, timeout=3).stdout.split())
+        out['cpu'] = max(0, min(100, round(total / (os.cpu_count() or 1))))
+    except (OSError, subprocess.SubprocessError, ValueError): pass
+    try:
+        vm = subprocess.run(['vm_stat'], capture_output=True, text=True, timeout=3).stdout
+        page = int(re.search(r'page size of (\d+)', vm)[1])
+        pages = lambda key: int((re.search(rf'{key}:\s+(\d+)', vm) or [0, 0])[1])
+        used = (pages('Pages active') + pages('Pages wired down') + pages('Pages occupied by compressor')) * page
+        total = int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True, timeout=3).stdout)
+        out['memory'] = max(0, min(100, round(used / total * 100)))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError): pass
+    return out
+
+
+def control_weather():
+    found = weather_data('')
+    if not found: return None
+    spot, us, data = found
+    now, day = data.get('current') or {}, data.get('daily') or {}
+    days = [{'day': datetime.strptime(d, '%Y-%m-%d').strftime('%a').upper(), 'high': round(day['temperature_2m_max'][i])}
+            for i, d in enumerate((day.get('time') or [])[1:4], 1)]
+    return {'place': spot.get('name', ''), 'temp': round(now['temperature_2m']) if 'temperature_2m' in now else None,
+            'unit': 'F' if us else 'C', 'sky': WEATHER_CODES.get(now.get('weather_code'), '').upper(), 'days': days}
+
+
+def control_music():
+    if not spotify_connected(): return {'connected': False}
+    now = spotify_api('GET', '/me/player/currently-playing') or {}
+    item = now.get('item') or {}
+    if not item: return {'connected': True}
+    return {'connected': True, 'title': item.get('name', ''), 'artist': ', '.join(a.get('name', '') for a in item.get('artists') or []),
+            'playing': bool(now.get('is_playing')), 'at': now.get('progress_ms') or 0, 'length': item.get('duration_ms') or 0}
+
+
+def control_agents():
+    root, rows = os.path.join(DIR, 'agents'), []
+    try: names = os.listdir(root)
+    except OSError: names = []
+    for name in names:
+        try:
+            with open(os.path.join(root, name, 'context.json')) as f: row = json.load(f)
+        except (OSError, ValueError): continue
+        status, ended = row.get('status', ''), row.get('ended') or 0
+        if status in ('running', 'queued', 'needs-you', 'waiting-screen') or (status == 'done' and time.time() - ended < 1800):
+            rows.append({'title': str(row.get('title', ''))[:40], 'status': status, 'step': str(row.get('step') or '')[:60], 'at': row.get('created') or 0})
+    if os.path.exists(os.path.join(NEWS_DIR, 'speaking.pid')): rows.append({'title': 'Newsroom', 'status': 'running', 'step': 'Reading your briefing', 'at': time.time()})
+    return sorted(rows, key=lambda r: (r['status'] != 'running', -r['at']))[:6]
+
+
+def control_state():
+    """Everything the Control Room shows, as one JSON object. Slow or online parts are cached; a part that fails is left out."""
+    state = {'system': control_system()}
+    state['weather'] = control_cached('weather', 900, control_weather)
+    state['music'] = control_cached('music', 4, control_music)
+    state['agents'] = control_agents()
+    state['timers'] = [{'label': r['label'], 'left': max(0, round(r['ends'] - time.time()))} for r in sorted(timers(), key=lambda r: r['ends'])[:3]]
+    plist = os.path.expanduser(f'~/Library/LaunchAgents/{NEWS_AGENT}.plist')
+    try:
+        with open(plist, 'rb') as f: when = plistlib.load(f).get('StartCalendarInterval', {})
+        state['briefing'] = clock(datetime.now().replace(hour=int(when.get('Hour', 9)), minute=int(when.get('Minute', 0))))
+    except (OSError, ValueError, plistlib.InvalidFileException): state['briefing'] = ''
+    turns = [r for r in read_rows(os.path.join(DIR, 'log.jsonl')) if isinstance(r.get('task'), str) and isinstance(r.get('reply'), str) and r['reply']][-4:]
+    state['transcript'] = [{'you': r['task'][:200], 'friday': r['reply'][:400]} for r in turns]
+    return state
+
+
+def quick_control(t):
+    """Open the Control Room by voice: the small box answers, the big window opens beside it."""
+    if re.fullmatch(r"(?:open|show|launch|bring up|pull up|go to)(?: me)?(?: the| my)? (?:control room|command center|hud|dashboard)", t):
+        try: subprocess.run([APP, '--control-room'], capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError): return None
+        return 'Opening the Control Room.'
+    return None
+
+
 def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
@@ -9187,6 +9288,8 @@ def main():
         return print(reply or 'No matching Spotify result in web search; this does not search your full private library.')
     if args[:1] == ['--queue']:
         return print(queue(' '.join(args[1:])))
+    if args[:1] == ['--control-state']:   # F.R.I.D.A.Y Control Room: the window's live readings
+        return print(json.dumps(control_state(), ensure_ascii=False))
     if args[:1] == ['--newsroom']:   # F.R.I.D.A.Y: the spoken briefing ("brief me", or the daily LaunchAgent)
         return print(newsroom() or 'No briefing.')
     if args[:1] == ['--newsroom-show'] and len(args) > 1:   # after "show my briefing": wait for that short answer, then fill the box

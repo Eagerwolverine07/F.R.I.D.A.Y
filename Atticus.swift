@@ -5558,6 +5558,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
         u.isEnabled = false; m.addItem(u)
         m.addItem(.separator())
         add(m, "Ask Atticus", #selector(ask), "", "waveform")
+        add(m, "Control Room…", #selector(openControlRoom), "", "circle.hexagongrid")   // F.R.I.D.A.Y: the full HUD window
         add(m, agentsUI.count > 0 ? "Agents · \(agentsUI.count) running…" : "Agents…", #selector(openAgents), "", "person.2")
         if agentsUI.hasLive || agentsUI.lingering { add(m, Prefs.bool("agentsHidden") ? "Show Agent Shelf" : "Hide Agent Shelf", #selector(hideAgents), "", Prefs.bool("agentsHidden") ? "eye" : "eye.slash") }
         add(m, "Dictation History…", #selector(dictationHistory), "", "clock.arrow.circlepath")
@@ -5610,6 +5611,7 @@ final class MenuBar: NSObject, NSMenuDelegate {
     @objc func dictationHistory() { settings.open(tab: "dictation") }
     @objc func pasteDictation() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { app.pasteLastDictation() } }   // after the menu closes and focus returns
     @objc func openAgents() { agentsUI.openView() }
+    @objc func openControlRoom() { controlRoom.open() }
     @objc func hideAgents() { Prefs.set("agentsHidden",!Prefs.bool("agentsHidden")) }
     @objc func openSetup() { onboarding.open() }
     @objc func reportFeedback() { settings.open(tab:"feedback") }
@@ -8447,6 +8449,9 @@ if CommandLine.arguments.dropFirst() == ["--system-ui"] {
 if CommandLine.arguments == [CommandLine.arguments[0], "--raise"] || CommandLine.arguments == [CommandLine.arguments[0], "--raise", "user"] {
     DistributedNotificationCenter.default().postNotificationName(.init("atticus.raise"), object: CommandLine.arguments.count == 3 ? "user" : nil, deliverImmediately: true); usleep(50_000); exit(0)
 }
+if CommandLine.arguments.dropFirst() == ["--control-room"] {   // F.R.I.D.A.Y: open the running app's Control Room
+    DistributedNotificationCenter.default().postNotificationName(.init("friday.control"), object: nil, deliverImmediately: true); usleep(50_000); exit(0)
+}
 if CommandLine.arguments.dropFirst() == ["--briefing"] {   // F.R.I.D.A.Y Newsroom: tell the running app a briefing is ready
     DistributedNotificationCenter.default().postNotificationName(.init("friday.briefing"), object: nil, deliverImmediately: true); usleep(50_000); exit(0)
 }
@@ -8608,9 +8613,71 @@ func checkMic() {
     showNudge(["title": a == "Slack" ? "Huddle detected" : "Meeting detected", "when": "In \(a) · Want Atticus to listen?", "who": "", "context": "", "app": a])
 }
 Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in checkMic() }
+// F.R.I.D.A.Y Control Room: the full HUD window (ui/control.html). Opened only on purpose — the menu, "open the control room", or
+// `Atticus --control-room`; saying "Friday" still opens the small box. While it is open it polls `atticus.py --control-state`
+// for its readings and mirrors the main voice's state (listening, thinking, speaking) onto its core.
+final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
+    var window: NSWindow?, web: WKWebView?, poll: Timer?, pulse: Timer?, fetching = false, lastMode = ""
+    override init() {
+        super.init()
+        DistributedNotificationCenter.default().addObserver(forName: .init("friday.control"), object: nil, queue: .main) { [weak self] _ in self?.open() }
+    }
+    func open() {
+        if window == nil {
+            let screen = NSScreen.main ?? NSScreen.screens[0], vf = screen.visibleFrame
+            let size = NSSize(width: min(1440, vf.width - 60), height: min(900, vf.height - 40))
+            let w = NSWindow(contentRect: NSRect(x: vf.midX - size.width / 2, y: vf.midY - size.height / 2, width: size.width, height: size.height),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            w.title = "F.R.I.D.A.Y Control Room"; w.titleVisibility = .hidden; w.titlebarAppearsTransparent = true
+            w.backgroundColor = NSColor(red: 0.055, green: 0.035, blue: 0.027, alpha: 1); w.appearance = NSAppearance(named: .darkAqua)
+            w.minSize = NSSize(width: 980, height: 620); w.isReleasedWhenClosed = false; w.delegate = self
+            w.collectionBehavior = [.fullScreenPrimary]
+            let config = WKWebViewConfiguration(); config.userContentController.add(self, name: "control")
+            let v = WKWebView(frame: w.contentView!.bounds, configuration: config)
+            v.setValue(false, forKey: "drawsBackground"); v.autoresizingMask = [.width, .height]
+            w.contentView?.addSubview(v); loadPage(v, "control.html")
+            window = w; web = v
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(web)
+        poll?.invalidate(); poll = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
+        pulse?.invalidate(); pulse = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in self?.mirror() }
+        refresh()
+    }
+    func refresh() {   // one helper at a time; a slow network part is cached on the Python side
+        guard !fetching, window?.isVisible == true else { return }
+        fetching = true
+        let p = py(["--control-state"]), out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { [weak self] _ in
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.fetching = false
+                guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), text.hasPrefix("{"),
+                      (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil else { return }   // only a whole JSON object reaches the page
+                self.web?.evaluateJavaScript("control.update(\(text))")
+            }
+        }
+        do { try p.run() } catch { fetching = false }
+    }
+    func mirror() {
+        let mode = app.voice?.isRunning == true ? "talk" : app.engine.isRunning ? "hear" : app.busy ? "busy" : "standby"
+        guard mode != lastMode else { return }
+        lastMode = mode; web?.evaluateJavaScript("control.mode('\(mode)')")
+    }
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        guard let b = m.body as? [String: Any] else { return }
+        if b["ready"] != nil { lastMode = ""; refresh(); mirror() }
+        if let t = b["send"] as? String, !t.trimmingCharacters(in: .whitespaces).isEmpty { app.typed(String(t.prefix(4000)), keep: true) }
+        if b["close"] != nil { window?.performClose(nil) }
+    }
+    func windowWillClose(_ n: Notification) { poll?.invalidate(); poll = nil; pulse?.invalidate(); pulse = nil }
+}
+
 let app = App()
 Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in app.wakeTick() }
 let agentsUI = AgentPanels()
+let controlRoom = ControlRoom()
 let routineWake = RoutineWake()
 let onboarding = Onboarding()
 if !UserDefaults.standard.bool(forKey: "onboarded") { DispatchQueue.main.async { onboarding.open() } }
