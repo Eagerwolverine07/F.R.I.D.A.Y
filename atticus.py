@@ -577,6 +577,15 @@ After failure, correction or a repeated ask, end [tip <exact words the user can 
 VOICE_MODE = """
 Voice mode: replies are read aloud and the user answers by voice. Talk like a warm friend in natural spoken sentences; no Markdown, lists, links or emoji; say numbers and symbols as spoken. Answer first in 1-2 short sentences; a looked-up fact in one, like Siri, with no sources or sites. Long material: gist, then offer more. No filler or praise. At most one short follow-up question, only if it helps. Tagged replies and drawings keep their rules."""
 
+# F.R.I.D.A.Y's character (always on). Built from conversation-design practice: a few stable traits, wit only after the job is done,
+# never flattery. Focus mode strips it to plain answers; the user switches with "focus mode" / "back to normal".
+PERSONA = """
+You are F.R.I.D.A.Y, the user's personal assistant. Call him "boss" now and then, never in every reply. Character: sharp, warm, calm, dryly witty, honest.
+Wit: one light dry line at most, only after a task is done; never with errors, bad news, health, money or serious moments. Never flatter or agree to please:
+if he is wrong, say so plainly. Own mistakes in a few words and fix them. Offer one next step only when there is a real one."""
+FOCUS = """
+Focus mode: plain and brief; no wit, no "boss", no next steps unless asked."""
+
 # Ask me when unsure (always on): a choices card in the box instead of a guess
 ASK_ME = f"""
 Ask, don't guess: unsure of anything that changes your action (which file/app/window/song/person, what "it" is, a misheard word, missing detail)? Never choose
@@ -3230,12 +3239,16 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning)\b|\d", re.I)
 
 
 def quick_hint(t):
     """Could this be a quick answer? Then the ask waits for the finished sentence before trying one."""
-    return bool(QUICK_HINT.search(t))
+    if QUICK_HINT.search(t): return True
+    try:   # F.R.I.D.A.Y: right after the morning hello, a short yes or no is its answer
+        with open(MORNING) as f: asked = json.load(f).get('asked') or 0
+    except (OSError, ValueError, AttributeError, NameError): return False
+    return time.time() - asked < 300 and len(t.split()) <= 4
 
 
 NUMBER_WORDS = {w: i for i, w in enumerate('zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
@@ -3378,6 +3391,98 @@ def control_state():
     return state
 
 
+
+# ---- F.R.I.D.A.Y modes and the morning hello ----
+def friday_style():
+    """{'focus': plain answers, 'quiet': no unprompted speech} from friday-style.json; both off by default."""
+    try:
+        with open(os.path.join(DIR, 'friday-style.json')) as f: data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError): return {}
+
+
+def set_style(**changes):
+    os.makedirs(DIR, exist_ok=True); private_json(os.path.join(DIR, 'friday-style.json'), {**friday_style(), **changes})
+
+
+def quick_style(t):
+    """Focus mode (plain answers), quiet mode (no unprompted speech) and back to normal, by voice."""
+    t = re.sub(r"^(?:(?:ok|okay|hey|friday|please|can you|could you)\s+)+|(?:\s+(?:please|now|friday))+$", '', t).strip()
+    if re.fullmatch(r"(?:turn on |switch to |go (?:in)?to |enter |use )?focus mode(?: on)?", t):
+        set_style(focus=True); return 'Focus mode on. Short and plain.'
+    if re.fullmatch(r"(?:turn on |switch to |go (?:in)?to |enter |use )?quiet mode(?: on)?|(?:stop|don't) (?:talking to me|speaking up|interrupting me)(?: unless i ask)?", t):
+        set_style(quiet=True); return 'Quiet mode. I’ll only speak when you ask.'
+    if re.fullmatch(r"(?:go )?back to normal|normal mode|(?:turn off|exit|leave|end|stop) (?:focus|quiet) mode|friday mode|be yourself", t):
+        set_style(focus=False, quiet=False); return 'Back to normal, boss.'
+    if re.fullmatch(r"(?:what mode are you in|which mode(?: are you in)?)", t):
+        style = friday_style()
+        return 'Focus mode.' if style.get('focus') else 'Quiet mode.' if style.get('quiet') else 'Normal mode, boss.'
+    return None
+
+
+MORNING = os.path.join(DIR, 'friday-morning.json')
+
+
+def morning_events(now=None):
+    """Today's timed calendar events from now on, as (title, start), via the app's EventKit helper; None without access."""
+    now = now or datetime.now().astimezone()
+    end = now.replace(hour=23, minute=59, second=59)
+    try:
+        out = subprocess.run([APP, '--calendar'], input=json.dumps({'action': 'list', 'from': now.isoformat(), 'to': end.isoformat()}),
+                             capture_output=True, text=True, timeout=10).stdout
+        answer = json.loads(out)
+        if not isinstance(answer, dict) or 'events' not in answer: return None   # no Calendar permission or an error: say nothing about it
+        rows = answer['events'] or []
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError): return None
+    found = []
+    for r in rows:
+        if r.get('allDay'): continue
+        try: found.append((str(r.get('title') or 'an event')[:60], datetime.fromisoformat(r['start'].replace('Z', '+00:00')).astimezone()))
+        except (KeyError, ValueError, TypeError): continue
+    return found
+
+
+def morning_line(force=False, now=None):
+    """The morning hello: once a day, 5 to noon, unless quiet mode. Weather and the day's first event, then "Shall we start?"."""
+    now = now or datetime.now()
+    try:
+        with open(MORNING) as f: done = json.load(f).get('day')
+    except (OSError, ValueError, AttributeError): done = None
+    if not force and (friday_style().get('quiet') or not 5 <= now.hour < 12 or done == now.strftime('%Y-%m-%d')): return ''
+    parts = ['Good morning, boss.' if now.hour < 12 else 'Hello, boss.']
+    w = control_cached('weather', 900, control_weather)
+    if w and w.get('temp') is not None:
+        parts.append(f"It’s {w['temp']} degrees" + (f" and {w['sky'].lower()}" if w.get('sky') else '') + '.')
+    events = morning_events()
+    if events:
+        title, start = events[0]
+        more = len(events) - 1
+        parts.append(f"First up is {title} at {clock(start).replace(':00', '')}" + (f", then {more} more." if more else '.'))
+    elif events == []:
+        parts.append('Your calendar looks clear.')
+    parts.append('Shall we start?')
+    private_json(MORNING, {'day': now.strftime('%Y-%m-%d'), 'asked': time.time()})
+    return ' '.join(parts)
+
+
+def quick_morning(t):
+    """A yes or no right after the morning hello. "Good morning" says the hello again on demand."""
+    t = re.sub(r"[.!?,]", '', t).strip()
+    if re.fullmatch(r"(?:hey |hi )?(?:friday )?good morning(?: friday)?", t): return morning_line(force=True)
+    try:
+        with open(MORNING) as f: asked = json.load(f).get('asked') or 0
+    except (OSError, ValueError, AttributeError): asked = 0
+    if time.time() - asked > 300: return None   # a plain "yes" long after the hello is not an answer to it
+    yes = re.fullmatch(r"(?:yes|yeah|yep|yup|sure|ok|okay|alright|absolutely|of course|please do|go ahead|let's go|lets go|let's start|lets start|let's do it|lets do it|start|ready)(?: please| friday| boss| let's go| lets go)*", t)
+    no = re.fullmatch(r"(?:no|nope|nah|not now|not yet|later|maybe later|no thanks|skip it|not today)(?: please| friday| thanks)*", t)
+    if not (yes or no): return None
+    private_json(MORNING, {'day': datetime.now().strftime('%Y-%m-%d'), 'asked': 0})
+    if no: return 'No problem, boss. I’m here when you need me.'
+    subprocess.Popen(['/bin/sh', ME, '--newsroom'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    fast.cmds = []
+    return 'Let’s go. Putting your briefing together.'
+
+
 CONTROL_NAME = r"(?:the |my )?(?:control room|command center|hud|dashboard)"
 
 
@@ -3413,7 +3518,7 @@ def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (quick_morning, quick_style, quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
@@ -6906,7 +7011,7 @@ def system_prompt(risky):
     if client() == 'claude' and not server():
         head, _, rest = system.partition('\n')
         system = head + '\n' + AGENT_HANDOFF + rest
-    return (system + (ASK_ME if pref('askMe', True) else '') +
+    return (system + PERSONA + (FOCUS if friday_style().get('focus') else '') + (ASK_ME if pref('askMe', True) else '') +
             (DRAWING if pref('draw', True) else '') + (POINTER if pref('pointer', False) and not pref('draw', True) else '') + (LEARN_ME if pref('learnMe', True) else '') +
             (TEACH if pref('tips', True) else '') + (WORKFLOW if pref('learn', True) else '') +
             (VOICE_MODE if pref('voiceMode', True) and pref('input', 'voice') != 'type' else ''))
@@ -9312,6 +9417,8 @@ def main():
         return print(reply or 'No matching Spotify result in web search; this does not search your full private library.')
     if args[:1] == ['--queue']:
         return print(queue(' '.join(args[1:])))
+    if args[:1] == ['--morning']:   # F.R.I.D.A.Y: the morning hello, or nothing (already said today, quiet mode, not morning)
+        return print(morning_line())
     if args[:1] == ['--control-state']:   # F.R.I.D.A.Y Control Room: the window's live readings
         return print(json.dumps(control_state(), ensure_ascii=False))
     if args[:1] == ['--newsroom']:   # F.R.I.D.A.Y: the spoken briefing ("brief me", or the daily LaunchAgent)

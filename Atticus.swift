@@ -2545,6 +2545,14 @@ final class App: NSObject, WKScriptMessageHandler {
     // F.R.I.D.A.Y Newsroom: atticus.py --newsroom leaves {"text": markdown, "script": words to read} in newsroom/ready.json and
     // posts friday.briefing. The briefing shows in the box (it stays until ✕ or Esc) and is read in F.R.I.D.A.Y's own voice, so the
     // hotkey, Esc and the wake word stop it like any reply. An empty script only shows it ("show my briefing").
+    // F.R.I.D.A.Y: the morning hello. Said in the box and out loud; in voice mode she then listens, so "yes" starts the day.
+    func morning(_ text: String) {
+        guard !busy, !engine.isRunning, !dictating, !text.isEmpty else { return }
+        show(); js("listen", true); js("words", "Good morning"); js("think")
+        answer = "✓ " + text; js("line", answer)
+        if Prefs.bool("voiceMode") { handsFree = true }
+        speak(text)
+    }
     func showBriefing() {
         let file = (Prefs.path as NSString).deletingLastPathComponent + "/newsroom/ready.json"
         guard let data = FileManager.default.contents(atPath: file),
@@ -8742,6 +8750,35 @@ func checkIdea() {
     app.idea(n % App.ideas.count)   // in order, so none repeats before the list is used up
 }
 Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in checkIdea() }
+// F.R.I.D.A.Y morning hello: once a day, the first time the user is at the Mac between 5 and noon, at a moment nothing else
+// needs them (no call, meeting, full-screen app, screen sharing or ask in progress). atticus.py --morning decides the words,
+// or says nothing in quiet mode or when it has already greeted today.
+var morningChecking = false
+func checkMorning() {
+    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; let day = f.string(from: Date())
+    let hour = Calendar.current.component(.hour, from: Date())
+    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    let fullScreen = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []).contains { w in
+        w[kCGWindowOwnerPID as String] as? pid_t == front && w[kCGWindowLayer as String] as? Int == 0 &&
+            NSScreen.screens.contains { (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) }?.size == $0.frame.size }
+    }
+    guard !morningChecking, (5..<12).contains(hour), UserDefaults.standard.string(forKey: "fridayMorning") != day, !Prefs.bool("paused"),
+          CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!) < 60,
+          !app.panel.isVisible, !app.busy, !app.engine.isRunning, !app.dictating, onboarding.win == nil,
+          !agentsUI.quiet, meeting.panel == nil, callAppsOnMic().isEmpty, !fullScreen else { return }
+    morningChecking = true
+    let p = py(["--morning"]), out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
+    p.terminationHandler = { _ in
+        let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        DispatchQueue.main.async {
+            morningChecking = false
+            UserDefaults.standard.set(day, forKey: "fridayMorning")   // asked once today, whatever the answer
+            if !text.isEmpty { app.morning(text) }
+        }
+    }
+    do { try p.run() } catch { morningChecking = false }
+}
+Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in checkMorning() }
 var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
              EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
 InstallEventHandler(GetApplicationEventTarget(), { _, ev, _ in
