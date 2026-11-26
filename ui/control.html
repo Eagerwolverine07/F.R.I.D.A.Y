@@ -12,7 +12,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-famil
 header{text-align:center}
 h1{margin:0;font:500 34px/1.1 "Avenir Next Condensed","Helvetica Neue",sans-serif;letter-spacing:24px;margin-right:-24px;color:var(--gold)}
 .sub{font-size:11px;letter-spacing:6px;color:var(--dim);margin-top:6px}
-main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(220px,320px) minmax(0,1fr) minmax(250px,390px);gap:24px}
+main{flex:1;min-height:0;display:grid;grid-template-columns:clamp(220px,23vw,320px) minmax(0,1fr) clamp(250px,27vw,390px);gap:24px}
 .col{display:flex;flex-direction:column;gap:14px;min-height:0}
 section{border:1px solid var(--edge);border-radius:6px;padding:14px 16px;background:var(--panel);min-height:0}
 h2{margin:0 0 10px;font-size:12px;font-weight:400;letter-spacing:4px;color:var(--gold);border-bottom:1px solid var(--rule);padding-bottom:7px;display:flex;justify-content:space-between}
