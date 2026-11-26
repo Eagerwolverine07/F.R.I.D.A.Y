@@ -80,7 +80,9 @@ class WiringTests(unittest.TestCase):
     def test_page_escapes_text_and_has_hooks(self):
         self.assertIn('window.control = {', PAGE); self.assertIn('update(s)', PAGE); self.assertIn('mode(name)', PAGE)
         self.assertIn('.scroll{flex:1;min-height:0;overflow-y:auto', PAGE); self.assertEqual(PAGE.count('stick(wasBottom)'), 2)   # transcript follows the newest line
-        self.assertIn('id="wave"', PAGE); self.assertIn("wave.target = name === 'talk' ? 12 : 0", PAGE)   # the outer ring ripples only while she speaks
+        self.assertIn('id="wave"', PAGE); self.assertIn("wave.target = name === 'talk' ? 20 : 0", PAGE)   # the light bars rise only while she speaks
+        self.assertEqual(PAGE.count('<line x1'), PAGE.count('<line x1'))
+        self.assertIn('id="spec"', PAGE); self.assertNotIn("setAttribute('d'", PAGE)   # the outer ring itself never bends
         self.assertIn("prefers-reduced-motion: reduce)').matches", PAGE)
         for field in ('r.you', 'r.friday', 'r.title.toUpperCase()', 'r.label.toUpperCase()'):
             self.assertIn('esc(' + field + ')', PAGE)
