@@ -75,7 +75,7 @@ class WiringTests(unittest.TestCase):
     def test_window_menu_and_launcher(self):
         self.assertIn('final class ControlRoom', SWIFT); self.assertIn('loadPage(v, "control.html")', SWIFT)
         self.assertIn('"Control Room…", #selector(openControlRoom)', SWIFT)
-        self.assertIn('["--control-room"]', SWIFT); self.assertIn('py(["--control-state"])', SWIFT)
+        self.assertIn('CommandLine.arguments[1] == "--control-room"', SWIFT); self.assertIn('py(["--control-state"])', SWIFT)
 
     def test_page_escapes_text_and_has_hooks(self):
         self.assertIn('window.control = {', PAGE); self.assertIn('update(s)', PAGE); self.assertIn('mode(name)', PAGE)
@@ -105,6 +105,30 @@ class WiringTests(unittest.TestCase):
         for piece in ('windowDidChangeOcclusionState', 'windowDidMiniaturize', 'p.qualityOfService = .background', 'withTimeInterval: 5,'):
             self.assertIn(piece, room)
         self.assertIn("control_cached('music', 9,", open(os.path.join(ROOT, 'atticus.py')).read())
+
+    def test_full_screen_and_close_by_voice(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(a, 'DIR', d), mock.patch.object(a.subprocess, 'run') as run:
+            self.assertIsNone(a.quick_control('make it full screen'))   # Control Room not open: "it" is another app's window, for the AI
+            self.assertEqual(a.quick_control('make the control room full screen'), 'Going full screen.')
+            self.assertEqual(run.call_args[0][0], [a.APP, '--control-room', 'full'])
+            open(os.path.join(d, 'control-open'), 'w').close()   # on screen now
+            for phrase in ('make it full screen', 'okay make it fullscreen please', 'full screen', 'go full screen', 'maximize it'):
+                self.assertEqual(a.quick_control(phrase), 'Going full screen.', phrase)
+            for phrase in ('exit full screen', 'make it normal', 'leave fullscreen'):
+                self.assertEqual(a.quick_control(phrase), 'Back to a window.', phrase)
+            self.assertEqual(run.call_args[0][0], [a.APP, '--control-room', 'exit'])
+            self.assertEqual(a.quick_control('close the control room'), 'Closing the Control Room.')
+            self.assertEqual(run.call_args[0][0], [a.APP, '--control-room', 'close'])
+            os.utime(os.path.join(d, 'control-open'), (time.time() - 60, time.time() - 60))   # stale mark: closed long ago
+            self.assertIsNone(a.quick_control('full screen'))
+        self.assertTrue(a.QUICK_HINT.search('make it full screen'))
+
+    def test_swift_handles_the_actions(self):
+        room = SWIFT[SWIFT.index('final class ControlRoom'):SWIFT.index('let app = App()')]
+        for piece in ('case "full":', 'toggleFullScreen(nil)', 'case "exit":', 'case "close": window?.performClose(nil)', 'createFile(atPath: openMark', 'removeItem(atPath: openMark)'):
+            self.assertIn(piece, room)
+        self.assertIn('["full", "exit", "close"].contains(CommandLine.arguments[2])', SWIFT)
+        self.assertIn('"Control Room", "full screen"]', SWIFT)
 
 
 if __name__ == '__main__':

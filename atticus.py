@@ -3228,7 +3228,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3376,12 +3376,34 @@ def control_state():
     return state
 
 
+CONTROL_NAME = r"(?:the |my )?(?:control room|command center|hud|dashboard)"
+
+
+def control_open():
+    """True while the Control Room is on screen: Atticus.swift touches control-open every few seconds while it shows."""
+    try: return time.time() - os.path.getmtime(os.path.join(DIR, 'control-open')) < 15
+    except OSError: return False
+
+
+def control_send(action=''):
+    try: subprocess.run([APP, '--control-room'] + ([action] if action else []), capture_output=True, timeout=5); return True
+    except (OSError, subprocess.SubprocessError): return False
+
+
 def quick_control(t):
-    """Open the Control Room by voice: the small box answers, the big window opens beside it."""
-    if re.fullmatch(r"(?:open|show|launch|bring up|pull up|go to)(?: me)?(?: the| my)? (?:control room|command center|hud|dashboard)", t):
-        try: subprocess.run([APP, '--control-room'], capture_output=True, timeout=5)
-        except (OSError, subprocess.SubprocessError): return None
-        return 'Opening the Control Room.'
+    """The Control Room by voice. It is F.R.I.D.A.Y's own window, which the AI's window tools skip, so it is driven here.
+    "it" means the Control Room only while it is on screen; otherwise these words go on to the AI (another app's window)."""
+    t = re.sub(r"(?:\s+(?:please|now|for me))+$", '', re.sub(r"^(?:(?:ok|okay|can you|could you|please)\s+)+", '', t))
+    full = r"(?:full ?screen|fullscreen|maximi[sz]ed?|bigger)"
+    if re.fullmatch(rf"(?:open|show|launch|bring up|pull up|go to)(?: me)? {CONTROL_NAME}", t):
+        return 'Opening the Control Room.' if control_send() else None
+    if (re.fullmatch(rf"(?:make|put|turn|set|go|open)? ?{CONTROL_NAME}(?: to| in)? {full}|(?:full ?screen|maximi[sz]e) {CONTROL_NAME}|open {CONTROL_NAME} (?:in )?{full}", t)
+            or control_open() and re.fullmatch(rf"(?:make|put|turn|set) (?:it|this|that)(?: to| in)? {full}|go {full}|{full}(?: it| mode)?|maximi[sz]e(?: it| this)?", t)):
+        return 'Going full screen.' if control_send('full') else None
+    if control_open() and re.fullmatch(rf"(?:exit|leave|undo|get out of|stop|end|turn off)(?: the)? (?:full ?screen|fullscreen)(?: mode)?|(?:make|put|turn) (?:it|this|{CONTROL_NAME}) (?:back )?(?:small|smaller|normal|windowed|back)|un ?maximi[sz]e(?: it)?", t):
+        return 'Back to a window.' if control_send('exit') else None
+    if re.fullmatch(rf"(?:close|hide|dismiss|shut|exit|quit)(?: the| my)? (?:control room|command center|hud|dashboard)", t):
+        return 'Closing the Control Room.' if control_send('close') else None
     return None
 
 

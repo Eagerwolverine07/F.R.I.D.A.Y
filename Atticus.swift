@@ -2499,7 +2499,7 @@ final class App: NSObject, WKScriptMessageHandler {
         var all = DictationData.words
         all.append("Atticus")
         // F.R.I.D.A.Y: names it kept mishearing — the wake word, its own name, Spotify and the user's playlists
-        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs"]
+        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen"]
         let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
         all += lists.compactMap { $0["name"] as? String }.prefix(40)
         let fixes = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/friday-fixes.json")))) as? [String: String] ?? [:]
@@ -8451,8 +8451,9 @@ if CommandLine.arguments.dropFirst() == ["--system-ui"] {
 if CommandLine.arguments == [CommandLine.arguments[0], "--raise"] || CommandLine.arguments == [CommandLine.arguments[0], "--raise", "user"] {
     DistributedNotificationCenter.default().postNotificationName(.init("atticus.raise"), object: CommandLine.arguments.count == 3 ? "user" : nil, deliverImmediately: true); usleep(50_000); exit(0)
 }
-if CommandLine.arguments.dropFirst() == ["--control-room"] {   // F.R.I.D.A.Y: open the running app's Control Room
-    DistributedNotificationCenter.default().postNotificationName(.init("friday.control"), object: nil, deliverImmediately: true); usleep(50_000); exit(0)
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--control-room" {   // F.R.I.D.A.Y: open, full screen, exit full screen or close the Control Room
+    let action = CommandLine.arguments.count > 2 && ["full", "exit", "close"].contains(CommandLine.arguments[2]) ? CommandLine.arguments[2] : nil
+    DistributedNotificationCenter.default().postNotificationName(.init("friday.control"), object: action, deliverImmediately: true); usleep(50_000); exit(0)
 }
 if CommandLine.arguments.dropFirst() == ["--briefing"] {   // F.R.I.D.A.Y Newsroom: tell the running app a briefing is ready
     DistributedNotificationCenter.default().postNotificationName(.init("friday.briefing"), object: nil, deliverImmediately: true); usleep(50_000); exit(0)
@@ -8622,7 +8623,15 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
     var window: NSWindow?, web: WKWebView?, poll: Timer?, pulse: Timer?, fetching = false, lastMode = ""
     override init() {
         super.init()
-        DistributedNotificationCenter.default().addObserver(forName: .init("friday.control"), object: nil, queue: .main) { [weak self] _ in self?.open() }
+        DistributedNotificationCenter.default().addObserver(forName: .init("friday.control"), object: nil, queue: .main) { [weak self] n in
+            guard let self else { return }
+            switch n.object as? String ?? "" {   // only these words; anything else just opens it
+            case "full": open(); if window?.styleMask.contains(.fullScreen) == false { window?.toggleFullScreen(nil) }
+            case "exit": if window?.styleMask.contains(.fullScreen) == true { window?.toggleFullScreen(nil) }
+            case "close": window?.performClose(nil)
+            default: open()
+            }
+        }
     }
     func open() {
         if window == nil {
@@ -8655,13 +8664,16 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
     }
     func rest() {
         poll?.invalidate(); poll = nil; pulse?.invalidate(); pulse = nil
+        try? FileManager.default.removeItem(atPath: openMark)
         web?.evaluateJavaScript("control.pause(true)")
     }
     func windowDidChangeOcclusionState(_ n: Notification) { if window?.occlusionState.contains(.visible) == true { wake() } else { rest() } }
     func windowDidMiniaturize(_ n: Notification) { rest() }
     func windowDidDeminiaturize(_ n: Notification) { wake() }
+    var openMark: String { (Prefs.path as NSString).deletingLastPathComponent + "/control-open" }   // tells atticus.py that "make it full screen" means this window
     func refresh() {   // one helper at a time; a slow network part is cached on the Python side
         guard !fetching, window?.isVisible == true else { return }
+        FileManager.default.createFile(atPath: openMark, contents: Data())
         fetching = true
         let p = py(["--control-state"]), out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
         p.qualityOfService = .background   // readings never compete with listening
