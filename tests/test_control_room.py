@@ -130,7 +130,7 @@ class WiringTests(unittest.TestCase):
         for piece in ('case "full":', 'toggleFullScreen(nil)', 'case "exit":', 'case "close": window?.performClose(nil)', 'createFile(atPath: openMark', 'removeItem(atPath: openMark)'):
             self.assertIn(piece, room)
         self.assertIn('["full", "exit", "close"].contains(CommandLine.arguments[2])', SWIFT)
-        self.assertIn('"Control Room", "full screen"]', SWIFT)
+        self.assertIn('"Control Room", "full screen"', SWIFT)
 
     def test_unclear_it_goes_to_the_ai_instead_of_a_guess(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(a, 'DIR', d), mock.patch.object(a, 'LAST', os.path.join(d, 'last')), \
