@@ -3234,7 +3234,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     func show() {
         // F.R.I.D.A.Y: with the Control Room open, the conversation shows there; the box comes up only for a question to answer
-        if controlRoom.showing && !retryOffer && askFile.isEmpty { return }
+        if controlRoom.hidesBox && !retryOffer && askFile.isEmpty { return }
         gen += 1; js("visible", true); js("mode", Prefs.bool("safe")); js("models", modelChoices())
         startFollowingPointerScreen()
         if panel.isVisible {   // still up: stay where the user dragged it
@@ -8786,7 +8786,11 @@ final class ControlRoom: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         if let t = b["send"] as? String, !t.trimmingCharacters(in: .whitespaces).isEmpty { app.typed(String(t.prefix(4000)), keep: true) }
         if b["close"] != nil { window?.performClose(nil) }
     }
-    var showing: Bool { window?.isVisible == true && window?.isMiniaturized == false }
+    // Actually in view on the current desktop: open but behind other windows, on another Space or minimized doesn't count,
+    // or the small box would stay hidden while the user can't see the Control Room either.
+    var showing: Bool { window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true && window?.isOnActiveSpace == true }
+    // The small box steps aside only for a full-screen Control Room on the desktop the user is looking at; in every other case it shows.
+    var hidesBox: Bool { showing && window?.styleMask.contains(.fullScreen) == true }
     func relay(_ call: String, _ arg: Any?) {   // the box's live words, mirrored while the Control Room is up
         guard showing, let web else { return }
         func send(_ kind: String, _ text: String) {

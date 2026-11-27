@@ -90,7 +90,9 @@ class WiringTests(unittest.TestCase):
     def test_wake_word_stays_in_the_control_room(self):
         show = SWIFT[SWIFT.index('    func show() {'):]
         show = show[:show.index('\n    }\n')]
-        self.assertIn('if controlRoom.showing && !retryOffer && askFile.isEmpty { return }', show)   # a question card still comes up
+        self.assertIn('if controlRoom.hidesBox && !retryOffer && askFile.isEmpty { return }', show)   # a question card still comes up
+        self.assertIn('var hidesBox: Bool { showing && window?.styleMask.contains(.fullScreen) == true }', SWIFT)   # only full screen, in view
+        self.assertIn('window?.occlusionState.contains(.visible) == true && window?.isOnActiveSpace == true', SWIFT)   # a question card still comes up
         self.assertIn('controlRoom.relay(call, arg)', SWIFT[SWIFT.index('    func js(_ call: String, _ arg: Any? = nil) {'):][:200])
         relay = SWIFT[SWIFT.index('func relay('):SWIFT.index('func windowWillClose(_ n: Notification) { rest() }')]
         for kind in ('"reset"', '"heard"', '"answer"'): self.assertIn(kind, relay)
