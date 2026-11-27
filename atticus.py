@@ -2845,8 +2845,48 @@ def geocode(place):
     return fallback
 
 
+HOME_PLACE = os.path.join(DIR, 'friday-home.json')
+
+
+def home_place():
+    """The home city the user set by voice ("my city is Boston"), or None."""
+    try:
+        with open(HOME_PLACE) as f: spot = json.load(f)
+        return spot if isinstance(spot, dict) and 'latitude' in spot and 'longitude' in spot else None
+    except (OSError, ValueError): return None
+
+
+def quick_home(t):
+    """Set, check or clear the home city. An internet-address guess is wrong behind a VPN (it said Singapore), so a set city wins."""
+    t = re.sub(r"^(?:(?:ok|okay|hey|friday|please)\s+)+|[.!?]+$", '', t).strip()
+    m = re.fullmatch(r"(?:my (?:city|home|home city|location) is|i live in|i'm in|i am in|i'm based in|i am based in|set my (?:city|home|location) to|my home town is)(?: in)? (.{2,60})", t)
+    if m:
+        place = re.sub(r'^(?:the city of )', '', m[1]).strip()
+        spot = geocode(place)
+        if not spot: return f'I couldn’t find {place}. Try the city and state, like Boston, Massachusetts.'
+        private_json(HOME_PLACE, spot)
+        try: os.remove(os.path.join(DIR, 'control-weather.json'))   # the Control Room picks the new place up straight away
+        except OSError: pass
+        where = ', '.join(x for x in (spot.get('name'), spot.get('admin1')) if x)
+        return f'Got it, boss. Home is {where}.'
+    if re.fullmatch(r"(?:where am i|what(?:'s| is) my (?:location|city|home city)|where do you think i am)", t):
+        spot = home_place()
+        if spot: return f"You’re set to {', '.join(x for x in (spot.get('name'), spot.get('admin1')) if x)}."
+        guess = here()
+        return (f"My guess from your internet connection is {guess.get('name')}, which can be wrong with a VPN. Say “my city is …” to set it."
+                if guess else 'I don’t know yet. Say “my city is …” to set it.')
+    if re.fullmatch(r"(?:forget|clear|reset|remove) my (?:city|home|home city|location)|use my internet location", t):
+        try: os.remove(HOME_PLACE)
+        except OSError: pass
+        return 'Cleared. I’ll guess from your internet connection again.'
+    return None
+
+
 def here():
-    """The user's approximate location from their internet connection (ipinfo.io, free, no key), cached for an hour; None offline."""
+    """Where the user is: the home city they set, else a guess from their internet connection (ipinfo.io, free, no key),
+    cached for an hour; None offline."""
+    home = home_place()
+    if home: return home
     path = os.path.join(DIR, 'friday-location.json')
     try:
         if time.time() - os.path.getmtime(path) < 3600:
@@ -3240,7 +3280,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits|kokoro|cocoro)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits|kokoro|cocoro|city|location|live in|where am i)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3714,7 +3754,7 @@ def quick_answer(t):
     """F.R.I.D.A.Y's Siri-style answers, in order; any surprise falls back to the AI."""
     t = re.sub(r"^(?:hey )?f\.?r\.?i\.?d\.?a\.?y\.?,? ", '', t).strip()
     t = spoken_numbers(t)
-    for answer in (quick_morning, quick_style, quick_voice, quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
+    for answer in (quick_morning, quick_style, quick_home, quick_voice, quick_control, quick_news, quick_hearing_fix, spotify_quick, quick_time, quick_timer, quick_math, quick_currency, quick_units, quick_mac, quick_sun, quick_air, quick_define, quick_wiki):
         try:
             reply = answer(t)
         except Exception:
