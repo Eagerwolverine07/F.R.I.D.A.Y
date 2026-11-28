@@ -70,6 +70,10 @@ class WiringTests(unittest.TestCase):
                       'if engine.hasPrefix("deepgram-") { self.deepgramCount(text.count) } else if mp3 { self.elevenCount(text.count) }'):
             self.assertIn(piece, SWIFT)
 
+    def test_ready_before_the_first_ask(self):
+        self.assertIn('DispatchQueue.main.asyncAfter(deadline: .now() + 5) { if let e = app.fillerEngine { app.fillerMake(e) } }', SWIFT)
+        self.assertIn('Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in if let e = app.fillerEngine { app.fillerMake(e) } }', SWIFT)
+
     def test_names_stay_clear_of_test_slices(self):
         block = SWIFT[SWIFT.index('    // F.R.I.D.A.Y fillers'):SWIFT.index('    // Characters sent this month')]
         for name in ('    func start(', '    func stop()', '    func say', '    func play('):

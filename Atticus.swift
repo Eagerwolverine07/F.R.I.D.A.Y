@@ -9184,6 +9184,9 @@ func checkMorning() {
     do { try p.run() } catch { morningChecking = false }
 }
 Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in checkMorning() }
+// F.R.I.D.A.Y fillers: have this voice's phrases ready before the first ask (and soon after a voice switch), not made on it.
+DispatchQueue.main.asyncAfter(deadline: .now() + 5) { if let e = app.fillerEngine { app.fillerMake(e) } }
+Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in if let e = app.fillerEngine { app.fillerMake(e) } }
 var specs = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
              EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
 InstallEventHandler(GetApplicationEventTarget(), { _, ev, _ in
