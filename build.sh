@@ -53,7 +53,10 @@ if [ -z "$ID" ]; then
   rm -rf "$K"
   ID=$(security find-identity -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
 fi
-codesign -s "${ID:--}" --force "$APP"
+codesign -s "${ID:--}" --force "$APP" || {   # the keychain said no (a locked keychain, or "Deny" on its prompt): basic signing still works
+  echo "Could not use the Atticus signing key, so using basic signing. macOS may ask for permissions again."
+  codesign -s - --force "$APP"
+}
 # register with macOS, or System Settings can't list it for permissions
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 AGENT=~/Library/LaunchAgents/com.atticus.app.plist   # starts at login, restarts if it crashes (Quit stays quit)
