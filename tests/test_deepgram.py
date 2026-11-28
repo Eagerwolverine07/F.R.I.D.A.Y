@@ -132,15 +132,27 @@ class VoiceCommandTests(Base):
 
 class WiringTests(unittest.TestCase):
     def test_app_speaks_through_deepgram_and_falls_back(self):
-        for piece in ('"https://api.deepgram.com/v1/speak?model=\\(deepgramVoice)&encoding=mp3"', 'elevenDir + "/deepgram.curl"',
+        for piece in ('"https://api.deepgram.com/v1/speak?model=\\(deepgramVoice)&encoding=linear16&container=none&sample_rate=24000"',
+                      'elevenDir + "/deepgram.curl"', '"--fail"', '"%{stderr}%{http_code}"', '"--no-buffer"',
                       'if deepgramOn { return found(deepgramVoice) }', '!kokoroOn && !deepgramOn && eleven["on"]',
                       'var studioOn: Bool { kokoroOn || deepgramOn || elevenOn', 'self.deepgramPausedUntil = Date().addingTimeInterval(3600)',
-                      'guard text.count <= 1900 else', 'if ok { self.deepgramCount(text.count) }', 'if deepgramOn { deepgramFetch(text, clip); return clip }',
-                      'guard cloudFetches.count < 6 else', 'for f in cloudFetches where f.isRunning { f.terminate() }',
-                      'Self.voiceChunks(words)\n', 'Self.voiceChunks(spoken(partial), closedOnly: true)', '(elevenOn || deepgramOn ? "mp3" : "wav")',
-                      '"Deepgram", "Pandora"'):
+                      'if text.count > 1900 { p.finished = true; return p }', 'if p.ok { self.deepgramCount(p.text.count) }',
+                      'if pieceRunning < 6 { deepgramStart(p) } else { pieceWaiting.append(p) }',
+                      'if deepgramOn { return deepgramSpeak(words, fallback: fallback) }',
+                      'if deepgramOn { deepgramPiece(part) } else { studioClip(part) }', '        deepgramReset()\n',
+                      'if !sounded { finish(true); return fallback() }', 'guard hold.isRunning else { streamPlayer.silence(); return fallback() }',
+                      'final class StreamPlayer {', 'MIT License, Copyright (c) 2025 Luke Oliff, github.com/lukeocodes/clarion',
+                      'Self.voiceChunks(words)\n', 'Self.voiceChunks(spoken(partial), closedOnly: true)', '"Deepgram", "Pandora"'):
             self.assertIn(piece, SWIFT)
         self.assertNotIn('Authorization: Token', SWIFT)   # the key never appears in the app or its process arguments
+        for gone in ('deepgramFetch', 'cloudFetches', 'encoding=mp3"'):
+            self.assertNotIn(gone, SWIFT)   # no whole-clip Deepgram path left behind
+
+    def test_trimming_and_holding_back(self):
+        start = SWIFT.index('    static func playable(_ p: SpeechPiece) -> Data? {'); body = SWIFT[start:SWIFT.index('\n    }\n', start)]
+        for piece in ('Int(0.4 * pcmRate) * 2, keep = Int(0.08 * pcmRate) * 2', 'p.first + Int(0.6 * pcmRate) * 2', 'even - Int(0.8 * pcmRate) * 2',
+                      'end = min(even, j + Int(0.15 * pcmRate) * 2)', 'end &= ~1', 'let even = p.data.count & ~1'):
+            self.assertIn(piece, body)
 
     def test_engine_order_has_no_loop(self):
         start = SWIFT.index('var deepgramOn: Bool {'); body = SWIFT[start:SWIFT.index('}', start)]
