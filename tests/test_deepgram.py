@@ -137,7 +137,7 @@ class WiringTests(unittest.TestCase):
                       'var studioOn: Bool { kokoroOn || deepgramOn || elevenOn', 'self.deepgramPausedUntil = Date().addingTimeInterval(3600)',
                       'guard text.count <= 1900 else', 'if ok { self.deepgramCount(text.count) }', 'if deepgramOn { deepgramFetch(text, clip); return clip }',
                       'guard cloudFetches.count < 6 else', 'for f in cloudFetches where f.isRunning { f.terminate() }',
-                      'Self.voiceChunks(words, grow: deepgramOn)', 'closedOnly: true, grow: deepgramOn', '(grow && !parts.isEmpty ? 200 : 12)', '(elevenOn || deepgramOn ? "mp3" : "wav")',
+                      'Self.voiceChunks(words)\n', 'Self.voiceChunks(spoken(partial), closedOnly: true)', '(elevenOn || deepgramOn ? "mp3" : "wav")',
                       '"Deepgram", "Pandora"'):
             self.assertIn(piece, SWIFT)
         self.assertNotIn('Authorization: Token', SWIFT)   # the key never appears in the app or its process arguments

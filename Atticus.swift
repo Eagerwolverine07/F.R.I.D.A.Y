@@ -2816,7 +2816,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // While the answer streams in: start making each finished sentence before the answer is done.
     func studioPrefetch(_ partial: String) {
         guard studioOn, talksBack, !(elevenOn && partial.count > 700 && eleven["long"] as? Bool != true) else { return }   // a long answer goes to the Mac voice: make nothing ahead
-        for part in Self.voiceChunks(spoken(partial), closedOnly: true, grow: deepgramOn) { studioClip(part) }
+        for part in Self.voiceChunks(spoken(partial), closedOnly: true) { studioClip(part) }
     }
     // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
     func warmStudio() {
@@ -2836,7 +2836,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     func studioSpeak(_ words: String, fallback: @escaping () -> Void) {
         studioToken += 1; let token = studioToken; studioPending = true
-        let parts = Self.voiceChunks(words, grow: deepgramOn)
+        let parts = Self.voiceChunks(words)
         let wanted = Set(parts)   // sentences guessed from a half-streamed answer that the final text dropped: skip them if not yet started
         studioQueue = studioQueue.enumerated().filter { ($0.offset == 0 && studioBusy) || wanted.contains($0.element) }.map(\.element)
         let clips = parts.map { studioClip($0) }
