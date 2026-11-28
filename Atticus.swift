@@ -2535,7 +2535,8 @@ final class App: NSObject, WKScriptMessageHandler {
         show(); js("notice", "Voice sounds robotic? This Mac has no natural voice yet. Get one: System Settings → Accessibility → Read & Speak → System voice → Manage Voices → download an Enhanced or Premium voice, then pick it as the System voice."); hide(after: 14)
     }
     @discardableResult func shush(keepClips: Bool = false) -> Bool {
-        let pending = studioPending   // a custom-voice reply still being made counts as speaking
+        let filler = fillerPlayer.playing; fillerHush()
+        let pending = studioPending || filler   // a custom-voice reply still being made counts as speaking
         studioToken += 1; studioPending = false
         if !keepClips { studioReset() }
         let briefing = stopBriefing()
@@ -2802,6 +2803,122 @@ final class App: NSObject, WKScriptMessageHandler {
         streamTalk = talk
         talk()
     }
+    // F.R.I.D.A.Y fillers: a short "On it, boss." while the answer is being worked out, so a spoken ask never meets silence.
+    // Only when the answer takes longer than 0.9 s (instant answers get none), a second one ("Bear with me, boss.") after 7 s,
+    // never one of the last five, none in Focus mode or for drawings. Each phrase is made once in the current voice and kept in
+    // fillers/<voice>/, so it plays at once and costs nothing again; the Mac voice has none. An answer ready mid-phrase waits for it.
+    static let fillerPhrases: [(group: String, text: String)] = [
+        ("task", "On it, boss."), ("task", "Right away."), ("task", "Consider it done."), ("task", "Got it."), ("task", "Leave it with me."), ("task", "Working on it."),
+        ("question", "Good question."), ("question", "Let me think."), ("question", "Give me a second, boss."), ("question", "One moment."),
+        ("question", "Hmm, let me see."), ("question", "Let me work that out."),
+        ("lookup", "Let me check."), ("lookup", "Looking that up now."), ("lookup", "Checking, boss."), ("lookup", "Let me find out."),
+        ("lookup", "Pulling that up."), ("lookup", "Searching now."),
+        ("long", "This one might take a moment."), ("long", "Bear with me, boss."), ("long", "Give me a few seconds on this one."), ("long", "Digging into it now."),
+        ("chat", "Sure."), ("chat", "Of course."), ("chat", "Alright."), ("chat", "Right."), ("chat", "Fair point, let me look."),
+        ("wit", "Already on it."), ("wit", "Easy one."), ("wit", "Say no more."),
+    ]
+    static func fillerGroup(_ ask: String, followUp: Bool) -> String {
+        let t = ask.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if followUp { return "chat" }
+        if t.range(of: #"\b(weather|forecast|news|headlines|search|look up|look it up|google|find out|latest|price of|stock|score|happening)\b"#, options: .regularExpression) != nil { return "lookup" }
+        if t.hasSuffix("?") || t.range(of: #"^(what|why|how|who|when|where|which|is|are|am|can|could|should|would|does|do|did|will|tell me|explain)\b"#, options: .regularExpression) != nil { return "question" }
+        return "task"
+    }
+    static func fillerFile(_ text: String) -> String {
+        text.lowercased().replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+    final class FillerPlayer: NSObject, AVAudioPlayerDelegate {
+        private var player: AVAudioPlayer?
+        var onEnd: (() -> Void)?
+        var playing: Bool { player?.isPlaying == true }
+        func sound(_ url: URL) -> Bool {
+            hushNow()
+            guard let p = try? AVAudioPlayer(contentsOf: url) else { return false }
+            p.delegate = self; p.prepareToPlay(); player = p
+            return p.play()
+        }
+        func hushNow() { player?.stop(); player = nil }   // no onEnd: whatever waited for it is dropped by the caller
+        func audioPlayerDidFinishPlaying(_ p: AVAudioPlayer, successfully flag: Bool) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, p === self.player else { return }
+                self.player = nil; self.onEnd?()
+            }
+        }
+    }
+    lazy var fillerPlayer: FillerPlayer = {
+        let f = FillerPlayer()
+        f.onEnd = { [weak self] in guard let self, let then = self.fillerThen else { return }; self.fillerThen = nil; then() }
+        return f
+    }()
+    var fillerToken = 0, fillerThen: (() -> Void)?, fillerRecent: [String] = [], fillerMaking: Set<String> = []
+    var fillerEngine: String? {   // the voice the phrases are made in; nil: none (the Mac voice speaks at once anyway)
+        if kokoroOn { return "kokoro-" + kokoroVoice }
+        if deepgramOn { return "deepgram-" + deepgramVoice }
+        if elevenOn, let id = eleven["voice_id"] as? String { return "eleven-" + id }
+        return nil
+    }
+    func fillerDir(_ engine: String) -> String { elevenDir + "/fillers/" + engine }
+    func fillerHush() { fillerToken += 1; fillerThen = nil; fillerPlayer.hushNow() }
+    func fillerArm(_ ask: String) {
+        fillerToken += 1; let token = fillerToken
+        guard talksBack, !drawing.active, let engine = fillerEngine else { return }
+        let style = (try? Data(contentsOf: URL(fileURLWithPath: elevenDir + "/friday-style.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        guard style["focus"] as? Bool != true else { return }   // Focus mode: plain and brief, no fillers
+        fillerMake(engine)
+        let group = Self.fillerGroup(ask, followUp: conversing && Date().timeIntervalSince(lastDone) < 90)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in self?.fillerSay(group, token) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7) { [weak self] in self?.fillerSay("long", token) }
+    }
+    func fillerSay(_ group: String, _ token: Int) {
+        guard token == fillerToken, busy, voice?.isRunning != true, !fillerPlayer.playing, let engine = fillerEngine else { return }
+        let dir = fillerDir(engine)
+        let wit = (group == "task" || group == "question") && Int.random(in: 0..<10) == 0   // a dry one now and then
+        let ready = Self.fillerPhrases.filter { ($0.group == group || wit && $0.group == "wit") && !fillerRecent.contains($0.text) }
+            .compactMap { phrase -> (String, URL)? in
+                let url = URL(fileURLWithPath: dir + "/" + Self.fillerFile(phrase.text) + (engine.hasPrefix("eleven-") ? ".mp3" : ".wav"))
+                return FileManager.default.fileExists(atPath: url.path) ? (phrase.text, url) : nil
+            }
+        guard let pick = ready.randomElement(), fillerPlayer.sound(pick.1) else { return }
+        fillerRecent = Array((fillerRecent + [pick.0]).suffix(5))
+    }
+    // Make the phrases this voice doesn't have yet, one at a time, in the background (about 600 characters, once per voice).
+    func fillerMake(_ engine: String) {
+        guard !fillerMaking.contains(engine) else { return }
+        let dir = fillerDir(engine), mp3 = engine.hasPrefix("eleven-")
+        let missing = Self.fillerPhrases.map(\.text).filter { !FileManager.default.fileExists(atPath: dir + "/" + Self.fillerFile($0) + (mp3 ? ".mp3" : ".wav")) }
+        guard !missing.isEmpty else { return }
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        fillerMaking.insert(engine)
+        let who = engine.split(separator: "-", maxSplits: 1).last.map(String.init) ?? ""
+        func next(_ rest: [String]) {
+            guard let text = rest.first else { fillerMaking.remove(engine); return }
+            let target = dir + "/" + Self.fillerFile(text) + (mp3 ? ".mp3" : ".wav"), tmp = target + ".part"
+            let args: [String]
+            if engine.hasPrefix("deepgram-") {
+                let body = (try? JSONSerialization.data(withJSONObject: ["text": text])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                args = ["--connect-timeout", "5", "--max-time", "30", "--fail", "-o", tmp, "-K", elevenDir + "/deepgram.curl", "-H", "Content-Type: application/json",
+                        "--data-binary", body, "https://api.deepgram.com/v1/speak?model=\(who)&encoding=linear16&container=wav&sample_rate=24000"]
+            } else if mp3 {
+                let body = (try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": "eleven_flash_v2_5"])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                args = ["--connect-timeout", "5", "--max-time", "30", "--fail", "-o", tmp, "-K", elevenDir + "/elevenlabs.curl", "-H", "Content-Type: application/json",
+                        "-H", "Accept: audio/mpeg", "--data-binary", body, "https://api.elevenlabs.io/v1/text-to-speech/\(who)?output_format=mp3_44100_128"]
+            } else {
+                let body = (try? JSONSerialization.data(withJSONObject: ["input": text, "voice": who])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                args = ["--max-time", "60", "--fail", "-o", tmp, "-H", "Content-Type: application/json", "--data-binary", body, "http://127.0.0.1:3901/v1/audio/speech"]
+            }
+            _ = studioCurl(args) { [weak self] status, _ in
+                guard let self else { return }
+                let size = (try? FileManager.default.attributesOfItem(atPath: tmp)[.size] as? Int) ?? 0
+                guard status == 0, size > 1000 else {   // offline, refused or out of credit: try again on a later ask
+                    try? FileManager.default.removeItem(atPath: tmp); self.fillerMaking.remove(engine); return
+                }
+                try? FileManager.default.removeItem(atPath: target); try? FileManager.default.moveItem(atPath: tmp, toPath: target)
+                if engine.hasPrefix("deepgram-") { self.deepgramCount(text.count) } else if mp3 { self.elevenCount(text.count) }
+                next(Array(rest.dropFirst()))
+            }
+        }
+        next(missing)
+    }
     // Characters sent this month, so "how many credits are left" has an answer even when the key may not read the balance.
     func elevenCount(_ n: Int) {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM"; let month = f.string(from: Date())
@@ -3033,6 +3150,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if talksBack && aloud { speak(a) }
     }
     func speak(_ a: String) {   // the custom VoiceStudio voice when it is running, else `say` with the best installed voice
+        if fillerPlayer.playing { fillerThen = { [weak self] in self?.speak(a) }; return }   // "On it, boss." finishes first
         stopWake(); shush(keepClips: true)   // sentences made while the answer streamed stay ready
         let words = spoken(a)
         let mac = { [weak self] in
@@ -4515,7 +4633,7 @@ final class App: NSObject, WKScriptMessageHandler {
         let rest = rest()
         if did.isEmpty, !rest.isEmpty && transcriptKey(rest) == transcriptKey(ahead), proc?.isRunning == true {   // already started on exactly this while the user talked
             ahead = ""; unwarm()
-            do { try "go".write(toFile: commit, atomically: true, encoding: .utf8) }
+            do { try "go".write(toFile: commit, atomically: true, encoding: .utf8); fillerArm(rest) }
             catch { cancel(); js("msg", "Could not confirm the request. Please try again.") }
             return
         }
@@ -4580,7 +4698,7 @@ final class App: NSObject, WKScriptMessageHandler {
                         continue
                     }
                     if line.hasPrefix("◇ "), let j = try? JSONSerialization.jsonObject(with: Data(line.dropFirst(2).utf8)) as? [String: Any] {   // "which one?": the choices card
-                        self.retryOffer = true; self.askNeed = ["pick": true]; self.askFile = j["a"] as? String ?? ""; self.show(); self.js("pick", j)
+                        self.fillerToken += 1; self.retryOffer = true; self.askNeed = ["pick": true]; self.askFile = j["a"] as? String ?? ""; self.show(); self.js("pick", j)
                         if self.talksBack, let q = j["q"] as? String { self.speak(App.pickSpeech(q, j["options"] as? [[String: Any]] ?? [])) }   // F.R.I.D.A.Y: say it, so it can be answered by voice
                         continue
                     }
@@ -4606,6 +4724,7 @@ final class App: NSObject, WKScriptMessageHandler {
                         continue
                     }
                     if line.hasPrefix("✓") {
+                        self.fillerToken += 1   // answered: no filler from here on
                         let result = self.replacement.flatMap { $0.isEmpty ? nil : $0 } ?? line.dropFirst(2).replacingOccurrences(of: "\u{2028}", with: "\n")
                         let finish = self.drawing.request?.steps.count == 1 ? "Done. It’s on your screen." : "Done. Steps are on screen."
                         self.mini.finish(); self.answer = "✓ " + (guided ? finish : result); self.js("line", self.answer)
@@ -4663,6 +4782,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if !speculative {
             do { try "go".write(toFile: commit, atomically: true, encoding: .utf8) }
             catch { cancel(); js("msg", "Could not confirm the request. Please try again."); return }
+            fillerArm(t)
         }
         do {
             var request: [String:Any] = ["front":mine, "task":t]
