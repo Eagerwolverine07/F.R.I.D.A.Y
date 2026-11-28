@@ -2632,6 +2632,35 @@ final class App: NSObject, WKScriptMessageHandler {
         used["total"] = (used["total"] as? Int ?? 0) + n
         if let data = try? JSONSerialization.data(withJSONObject: used) { FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600]) }
     }
+    // One Deepgram sentence, fetched at once (up to 6 at a time; the rest wait their turn). Clips play in order however they finish.
+    var cloudFetches: [Process] = [], cloudWaiting: [(String, VoiceClip)] = []
+    func deepgramFetch(_ text: String, _ clip: VoiceClip) {
+        let finish = { (ok: Bool) in clip.ok = ok; clip.done = true; clip.waiters.forEach { $0(ok) }; clip.waiters = [] }
+        guard text.count <= 1900 else { return finish(false) }   // over Deepgram's 2,000-character limit (a long run-on line): the Mac voice says it
+        guard cloudFetches.count < 6 else { cloudWaiting.append((text, clip)); return }
+        let round = studioRound
+        let body = (try? JSONSerialization.data(withJSONObject: ["text": text])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        var fetch: Process?
+        fetch = studioCurl(["--max-time", "30", "-o", clip.file, "-w", "%{http_code}", "-K", elevenDir + "/deepgram.curl",
+                            "-H", "Content-Type: application/json", "--data-binary", body,
+                            "https://api.deepgram.com/v1/speak?model=\(deepgramVoice)&encoding=mp3"]) { [weak self] status, code in
+            guard let self else { return }
+            if let f = fetch { self.cloudFetches.removeAll { $0 === f } }
+            guard round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
+            let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
+            let ok = status == 0 && code == "200" && size > 500
+            if ok { self.deepgramCount(text.count) }
+            if ["401", "402", "403"].contains(code) {   // bad key or no credit left: the Mac voice for an hour, without trying each sentence
+                self.deepgramPausedUntil = Date().addingTimeInterval(3600)
+                NSLog("Deepgram refused (HTTP %@): Mac voice for an hour", code)
+            } else if code == "429" {   // too many at once: the Mac voice for a minute
+                self.deepgramPausedUntil = Date().addingTimeInterval(60)
+            } else if !ok { NSLog("Deepgram failed (curl %d, HTTP %@)", status, code) }
+            finish(ok)
+            if !self.cloudWaiting.isEmpty { let (t, c) = self.cloudWaiting.removeFirst(); self.deepgramFetch(t, c) }
+        }
+        if let f = fetch { cloudFetches.append(f) }
+    }
     // Characters sent this month, so "how many credits are left" has an answer even when the key may not read the balance.
     func elevenCount(_ n: Int) {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM"; let month = f.string(from: Date())
@@ -2645,19 +2674,28 @@ final class App: NSObject, WKScriptMessageHandler {
         !kokoroOn && !deepgramOn && eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
             FileManager.default.fileExists(atPath: elevenDir + "/elevenlabs.curl") && Date() > elevenPausedUntil
     }
-    static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
+    static func voiceChunks(_ words: String, closedOnly: Bool = false, grow: Bool = false) -> [String] {
         var parts: [String] = [], current = ""
-        for sentence in words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n") {
+        var sentences = words.replacingOccurrences(of: #"([.!?…])\s+"#, with: "$1\n", options: .regularExpression).split(separator: "\n")
+        // streaming: a last sentence with no full stop yet is still being written; making it now would only waste a request
+        // (finished means a full stop and then a space: "It is 3." may still become "3.5 degrees")
+        let ended = words.last?.isWhitespace == true && [".", "!", "?", "…"].contains(words.trimmingCharacters(in: .whitespacesAndNewlines).last.map(String.init) ?? "")
+        if closedOnly, !sentences.isEmpty, !ended { sentences.removeLast() }
+        for sentence in sentences {
             current += (current.isEmpty ? "" : " ") + sentence.trimmingCharacters(in: .whitespaces)
-            if current.count >= 12 { parts.append(current); current = "" }   // "Sure." alone is too short to be worth its own request
+            // "Sure." alone is too short to be worth its own request. grow (Deepgram): the first piece stays short so she starts fast,
+            // later ones gather sentences up to ~200 characters, so there are fewer joins between clips.
+            if current.count >= (grow && !parts.isEmpty ? 200 : 12) { parts.append(current); current = "" }
         }
         if closedOnly { return parts }   // streaming: the unfinished tail may still grow
-        if !current.isEmpty { if parts.isEmpty { parts.append(current) } else { parts[parts.count - 1] += " " + current } }
+        // the short end: its own piece when growing (the pieces made ahead stay as they are), else joined to the last one
+        if !current.isEmpty { if parts.isEmpty || grow && current.count >= 12 { parts.append(current) } else { parts[parts.count - 1] += " " + current } }
         return parts
     }
     func studioReset() {   // a new ask, Esc or the hotkey: drop every made or queued sentence
         studioRound += 1; studioQueue = []; studioBusy = false
         if let f = studioFetch, f.isRunning { f.terminate() }; studioFetch = nil
+        for f in cloudFetches where f.isRunning { f.terminate() }; cloudFetches = []; cloudWaiting = []
         for clip in studioClips.values { try? FileManager.default.removeItem(atPath: clip.file); clip.waiters.forEach { $0(false) } }
         studioClips = [:]
     }
@@ -2700,7 +2738,9 @@ final class App: NSObject, WKScriptMessageHandler {
     @discardableResult func studioClip(_ text: String) -> VoiceClip {
         if let clip = studioClips[text] { return clip }
         let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count)." + (elevenOn || deepgramOn ? "mp3" : "wav"))
-        studioClips[text] = clip; studioQueue.append(text)
+        studioClips[text] = clip
+        if deepgramOn { deepgramFetch(text, clip); return clip }   // in parallel, not one after another: no gaps waiting on the network
+        studioQueue.append(text)
         if !studioBusy { studioNext() }
         return clip
     }
@@ -2731,30 +2771,8 @@ final class App: NSObject, WKScriptMessageHandler {
                 }
                 return
             }
-            if self.deepgramOn {
-                guard text.count <= 1900 else {   // over Deepgram's 2,000-character limit (a long run-on line): the Mac voice says it
-                    self.studioBusy = false; self.studioQueue.removeFirst(); clip.done = true
-                    clip.waiters.forEach { $0(false) }; clip.waiters = []; return self.studioNext()
-                }
-                let body = (try? JSONSerialization.data(withJSONObject: ["text": text])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                self.studioFetch = self.studioCurl(["--max-time", "30", "-o", clip.file, "-w", "%{http_code}", "-K", self.elevenDir + "/deepgram.curl",
-                                                    "-H", "Content-Type: application/json", "--data-binary", body,
-                                                    "https://api.deepgram.com/v1/speak?model=\(id)&encoding=mp3"]) { [weak self] status, code in
-                    guard let self, round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
-                    self.studioFetch = nil; self.studioBusy = false; self.studioQueue.removeFirst()
-                    let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
-                    clip.ok = status == 0 && code == "200" && size > 500; clip.done = true
-                    if clip.ok { self.deepgramCount(text.count) }
-                    if ["401", "402", "403"].contains(code) {   // bad key or no credit left: the Mac voice for an hour, without trying each sentence
-                        self.deepgramPausedUntil = Date().addingTimeInterval(3600)
-                        NSLog("Deepgram refused (HTTP %@): Mac voice for an hour", code)
-                    } else if code == "429" {   // too many at once: the Mac voice for a minute
-                        self.deepgramPausedUntil = Date().addingTimeInterval(60)
-                    } else if !clip.ok { NSLog("Deepgram failed (curl %d, HTTP %@)", status, code) }
-                    clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
-                    self.studioNext()
-                }
-                return
+            if self.deepgramOn {   // switched to Deepgram while this sentence waited in the queue
+                self.studioBusy = false; self.studioQueue.removeFirst(); self.deepgramFetch(text, clip); return self.studioNext()
             }
             if self.elevenOn {
                 let body = (try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": "eleven_flash_v2_5"])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -2798,7 +2816,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // While the answer streams in: start making each finished sentence before the answer is done.
     func studioPrefetch(_ partial: String) {
         guard studioOn, talksBack, !(elevenOn && partial.count > 700 && eleven["long"] as? Bool != true) else { return }   // a long answer goes to the Mac voice: make nothing ahead
-        for part in Self.voiceChunks(spoken(partial), closedOnly: true) { studioClip(part) }
+        for part in Self.voiceChunks(spoken(partial), closedOnly: true, grow: deepgramOn) { studioClip(part) }
     }
     // VoiceStudio unloads its model after 15 idle minutes and reloading takes seconds: start loading it as the user starts talking.
     func warmStudio() {
@@ -2818,7 +2836,7 @@ final class App: NSObject, WKScriptMessageHandler {
     }
     func studioSpeak(_ words: String, fallback: @escaping () -> Void) {
         studioToken += 1; let token = studioToken; studioPending = true
-        let parts = Self.voiceChunks(words)
+        let parts = Self.voiceChunks(words, grow: deepgramOn)
         let wanted = Set(parts)   // sentences guessed from a half-streamed answer that the final text dropped: skip them if not yet started
         studioQueue = studioQueue.enumerated().filter { ($0.offset == 0 && studioBusy) || wanted.contains($0.element) }.map(\.element)
         let clips = parts.map { studioClip($0) }
