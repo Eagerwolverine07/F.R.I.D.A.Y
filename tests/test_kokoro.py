@@ -101,7 +101,7 @@ class CommandTests(unittest.TestCase):
 class WiringTests(unittest.TestCase):
     def test_app_uses_the_helper_and_falls_back(self):
         for piece in ('"http://127.0.0.1:3901/v1/audio/speech"', 'if kokoroOn { return found(kokoroVoice) }', '"http://127.0.0.1:3901/warm"',
-                      'if status == 7 { self.kokoroPausedUntil = Date().addingTimeInterval(60) }', '!kokoroOn && eleven["on"]'):
+                      'if status == 7 { self.kokoroPausedUntil = Date().addingTimeInterval(60) }', '!kokoroOn && !deepgramOn && eleven["on"]'):
             self.assertIn(piece, SWIFT)
 
     def test_installer(self):

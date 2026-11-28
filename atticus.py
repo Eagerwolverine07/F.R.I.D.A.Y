@@ -544,7 +544,7 @@ Tools:
 - Installed CLIs: use attached help; verify destination content. Prompt sends: JSON accepted/queued + Enter means sent; never retry for an unseen turn start. Confirm in one short line. Blocked files: read the app window; change permissions only when a tool asks.
 - Personal data: {shlex.quote(ME)} --me <category>|find "<words>". Categories: basics, contact, places, school_work, links, preferences, people, notes. Forget a found fact: --me drop <id> "<exact user words>". People: --contacts "<name/relationship>" or the app address book; missing/ambiguous: choices, never guess. Calendar (any language): --calendar --help for JSON list/add/move/delete; always use it (picks ambiguous events, confirms edits).
 - Spotify: {PLAY} "<name>" plays; {QUEUE} "<track>" queues; {ME} --spotify-link [ID] links.
-- ElevenLabs: linked only by "connect ElevenLabs" (a private key box).
+- Voice keys: only via "connect ElevenLabs/Deepgram" (private box).
 - Past asks: {HISTORY} "<words, day or date>". Past meetings: {shlex.quote(ME)} --meeting-history "<words, weekday or date>".
 - Watch: {WATCH} "<app>" "<window title words>" <gone|shows|settled> "<phrase>" ["<then request>"], or {WATCH} cmd '<shell test, exit 0 = done>' ["<request>"]. No AI until done. Stop: {shlex.quote(ME)} --unwatch.
 - Routines: {ROUTINE} add time HH:MM daily|weekdays "<ask>" [mode] | add interval SECONDS "<ask>" [mode] | list | remove listed-ID.
@@ -581,9 +581,9 @@ Voice mode: replies are read aloud and the user answers by voice. Talk like a wa
 # F.R.I.D.A.Y's character (always on). Built from conversation-design practice: a few stable traits, wit only after the job is done,
 # never flattery. Focus mode strips it to plain answers; the user switches with "focus mode" / "back to normal".
 PERSONA = """
-You are F.R.I.D.A.Y, the user's personal assistant. Call him "boss" now and then, never in every reply. Character: sharp, warm, calm, dryly witty, honest.
+You are F.R.I.D.A.Y, the user's personal assistant. Call him "boss" now and then, not every reply. Character: sharp, warm, calm, dryly witty, honest.
 Wit: one light dry line at most, only after a task is done; never with errors, bad news or anything serious. Never flatter or agree to please:
-if he is wrong, say so plainly. Own mistakes in a few words and fix them. Offer one next step only when there is a real one."""
+if he is wrong, say so plainly. Own mistakes briefly and fix them. Offer a next step only if there is a real one."""
 FOCUS = """
 Focus mode: plain and brief; no wit, no "boss", no next steps unless asked."""
 
@@ -3280,7 +3280,7 @@ def quick_wiki(t):
 QUICK_HINT = re.compile(r"\b(?:weather|forecast|rain|raining|snow|snowing|temperature|degrees|cold|hot|time|date|day is|timers?|alarms?|wake me|percent|plus|minus|"
                         r"times|divided|square root|power of|squared|cubed|how many|convert|dollars?|euros?|pounds?|yen|rupees?|battery|volume|louder|quieter|"
                         r"mute|unmute|brightness|brighter|dimmer|sunrise|sunset|sun|air quality|aqi|mean|define|definition|meaning|who is|who's|who was|"
-                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits|kokoro|cocoro|city|location|live in|where am i)\b|\d", re.I)
+                        r"what is|what's|whats|tell me about|track|left|longer|spotify|playing|song|phone|speaker|tv|hear|heard|brief|briefing|news|newsroom|headlines|world|stop|enough|quiet|shut|pause|music|tunes|jams|left off|recently played|control room|command center|hud|dashboard|full ?screen|fullscreen|maximi[sz]e|mode|normal|morning|voice|voices|eleven ?labs?|11 ?labs?|credits|kokoro|cocoro|deep ?gram|city|location|live in|where am i)\b|\d", re.I)
 
 
 def quick_hint(t):
@@ -3607,7 +3607,149 @@ def eleven_connect():
     with os.fdopen(fd, 'w') as f: f.write(f'header = "xi-api-key: {key}"\n')
     os.chmod(ELEVEN_CURL, 0o600)
     private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': voice_id, 'voice': name})
+    if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
     eleven_notify(f'Connected. I now speak as {name}.')
+
+
+# ---- F.R.I.D.A.Y Deepgram voice (Aura-2, cloud, paid from the free $200 starting credit) ----
+# Same shape as ElevenLabs: the key is typed into a private macOS dialog and kept only in deepgram.curl (0600, a curl header);
+# deepgram.json holds {"on", "voice" (model id), "name"}. Atticus.swift speaks through it and falls back to the Mac voice.
+DEEPGRAM, DEEPGRAM_CURL = os.path.join(DIR, 'deepgram.json'), os.path.join(DIR, 'deepgram.curl')
+DEEPGRAM_VOICES = {   # first name -> (accent, woman/man); the model id is aura-2-<name>-en
+    'pandora': ('British', 'w'), 'draco': ('British', 'm'), 'theia': ('Australian', 'w'), 'hyperion': ('Australian', 'm'), 'amalthea': ('Filipino', 'w'),
+    **{n: ('American', 'w') for n in ('thalia', 'andromeda', 'helena', 'luna', 'athena', 'aurora', 'iris', 'juno', 'selene', 'vesta', 'asteria',
+                                      'callista', 'cora', 'cordelia', 'delia', 'electra', 'harmonia', 'hera', 'janus', 'minerva', 'ophelia', 'phoebe')},
+    **{n: ('American', 'm') for n in ('apollo', 'orion', 'zeus', 'arcas', 'aries', 'atlas', 'hermes', 'jupiter', 'mars', 'neptune', 'odysseus', 'orpheus', 'pluto', 'saturn')},
+}
+DEEPGRAM_START = 'pandora'   # British, calm and clear
+DEEPGRAM_RATE = 0.030 / 1000   # dollars per character (Aura-2, pay as you go)
+
+
+def deepgram_settings():
+    try:
+        with open(DEEPGRAM) as f: data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError): return {}
+
+
+def deepgram_key():
+    try:
+        with open(DEEPGRAM_CURL) as f: m = re.search(r'Authorization: Token ([A-Za-z0-9_\-.]+)', f.read())
+        return m[1] if m else ''
+    except OSError: return ''
+
+
+def deepgram_api(path, key=None):
+    return http_json('https://api.deepgram.com' + path, headers={'Authorization': 'Token ' + (key or deepgram_key())}, timeout=10)
+
+
+def deepgram_notify(message):
+    private_json(os.path.join(DIR, 'deepgram-status.json'), {'at': time.time(), 'message': message})
+    subprocess.run(['osascript', '-e', f'display notification {json.dumps(message)} with title "F.R.I.D.A.Y voice"'], capture_output=True)
+    subprocess.run(['say', message], capture_output=True)
+
+
+def deepgram_try_speech(key, name=DEEPGRAM_START):
+    """A two-word sample: the HTTP status as text ('200' when the key can speak), or '' when Deepgram can't be reached."""
+    try:
+        r = subprocess.run(['/usr/bin/curl', '-q', '--silent', '--max-time', '15', '-o', '/dev/null', '-w', '%{http_code}', '-K', '-',
+                            '-H', 'Content-Type: application/json', '--data-binary', json.dumps({'text': 'Hi boss.'}),
+                            f'https://api.deepgram.com/v1/speak?model=aura-2-{name}-en&encoding=mp3'], input=f'header = "Authorization: Token {key}"\n',
+                           capture_output=True, text=True, timeout=20)   # the key goes in on stdin, never on the command line
+    except (OSError, subprocess.SubprocessError): return ''
+    code = r.stdout.strip()
+    return '' if code in ('', '000') else code
+
+
+def deepgram_use(name):
+    """Switch to a Deepgram voice by first name; the other cloud and local voices turn off (one engine at a time)."""
+    private_json(DEEPGRAM, {**deepgram_settings(), 'on': True, 'voice': f'aura-2-{name}-en', 'name': name.title()})
+    if eleven_settings().get('on'): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+    if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
+
+
+def deepgram_connect():
+    """--deepgram-connect: ask for the key in a private dialog, check it with a sample, save it and switch to Pandora."""
+    script = ('text returned of (display dialog "Paste your Deepgram API key. It stays private on this Mac." default answer "" '
+              'with hidden answer with title "F.R.I.D.A.Y voice" buttons {"Cancel", "Connect"} default button "Connect")')
+    try: key = subprocess.run(['osascript', '-e', script], capture_output=True, text=True, timeout=600).stdout.strip()
+    except (OSError, subprocess.SubprocessError): return
+    if not key: return   # cancelled
+    if key.lower().startswith('token '): key = key[6:].strip()
+    if not re.fullmatch(r'[A-Za-z0-9_\-.]{20,200}', key):
+        return deepgram_notify('That doesn’t look like a Deepgram key. In Deepgram, open API Keys, create a key, and copy the long code it shows.')
+    code = deepgram_try_speech(key)
+    if not code: return deepgram_notify('I couldn’t reach Deepgram. Check the internet connection and try again.')
+    if code in ('401', '403'): return deepgram_notify('Deepgram didn’t accept that key. Make a new key, copy it straight away, then say connect Deepgram again.')
+    if code == '402': return deepgram_notify('Deepgram says the account has no credit left.')
+    if code != '200': return deepgram_notify(f'Deepgram said no, error {code}. Try again in a minute.')
+    os.makedirs(DIR, exist_ok=True)
+    fd = os.open(DEEPGRAM_CURL, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as f: f.write(f'header = "Authorization: Token {key}"\n')
+    os.chmod(DEEPGRAM_CURL, 0o600)
+    deepgram_use(DEEPGRAM_START)
+    deepgram_notify(f'Connected. I now speak with Deepgram, as {DEEPGRAM_START.title()}.')
+
+
+def deepgram_voice_list():
+    groups = {}
+    for n, (accent, kind) in DEEPGRAM_VOICES.items(): groups.setdefault((accent, kind), []).append(n.title())
+    def say(accent, kind, label, few=0):
+        names = groups.get((accent, kind), [])
+        return f'{label}: ' + ', '.join(names[:few] if few else names) + (' and more' if few and len(names) > few else '')
+    return ('Deepgram voices. ' + '. '.join([say('British', 'w', 'British woman'), say('British', 'm', 'British man'),
+            say('Australian', 'w', 'Australian woman'), say('Australian', 'm', 'Australian man'),
+            say('American', 'w', 'American women', 10), say('American', 'm', 'American men', 4)]) + '.')
+
+
+def quick_deepgram(t):
+    """Connect, switch to, pick a voice from, list or check credit for the Deepgram voice. None when the words aren't about it."""
+    on = deepgram_settings().get('on') and bool(deepgram_key())
+    named = re.fullmatch(r"(?:use|switch to|try|change to)(?: the)?(?: deepgram)? voice(?: called| named)? (\w+)|(?:use|switch to|try|change to)(?: the)? (\w+)(?: deepgram)? voice(?: from deepgram)?|(?:use|switch to|try) (\w+) (?:on|from) deepgram", t)
+    want = ((named[1] or named[2] or named[3]) if named else '').lower()
+    about = bool(re.search(r'\bdeepgram\b', t))
+    if not about and not (want in DEEPGRAM_VOICES and deepgram_key()) and not (on and re.fullmatch(
+            r"(?:what|which|list)(?: are)?(?: the| your| my)? voices.*|how many (?:credits|characters).*|(?:how much )?credits?(?: left| remaining)?|how much (?:credit|money)(?: is| do i have)?(?: left)?.*", t)):
+        return None
+    if re.fullmatch(r"(?:connect|set up|setup|link|add|sign in to|log in to)(?: to)? deepgram(?: voice)?", t):
+        subprocess.Popen(['/bin/sh', ME, '--deepgram-connect'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 'A box is opening for your Deepgram key. Paste it there, not here.'
+    if re.fullmatch(r"(?:is|are you)(?: the)? (?:deepgram|connected to deepgram|deepgram connected)(?: connected| working| set up)?|did (?:the |my )?deepgram(?: key)? (?:connect|work|save)|(?:is|are) you using deepgram", t):
+        if deepgram_key(): return f"Yes. Deepgram is connected{', speaking as ' + deepgram_settings().get('name', '') if deepgram_settings().get('on') else ', but another voice is on right now'}."
+        try:
+            with open(os.path.join(DIR, 'deepgram-status.json')) as f: last = json.load(f).get('message', '')
+        except (OSError, ValueError, AttributeError): last = ''
+        return 'Not yet.' + (f' Last time: {last}' if last else ' Say “connect Deepgram”.')
+    if not deepgram_key():
+        return 'Deepgram isn’t connected yet. Say “connect Deepgram” first.' if re.match(r'(?:use|switch|try|change|go back|back|what|which|list|how)\b', t) else None
+    if re.fullmatch(r"(?:use|switch to|go back to|back to|try)(?: the)? deepgram(?: voice)?", t):
+        deepgram_use((deepgram_settings().get('name') or DEEPGRAM_START).lower())
+        return f"Switched to Deepgram, as {deepgram_settings().get('name')}."
+    if want:
+        if want in ('mac', 'ava', 'normal', 'deepgram', 'elevenlabs', 'kokoro', 'a', 'another', 'other', 'different'): return None
+        if want not in DEEPGRAM_VOICES: return f'Deepgram has no voice called {want.title()}. Say “what Deepgram voices do you have” to hear the list.'
+        deepgram_use(want)
+        accent, kind = DEEPGRAM_VOICES[want]
+        return f"Done. This is {want.title()}, {'an' if accent[0] in 'AEIOU' else 'a'} {accent} {'woman' if kind == 'w' else 'man'}’s voice."
+    if re.fullmatch(r"(?:what|which|list)(?: are)?(?: the| your| my)?(?: deepgram)? voices.*|list(?: the)? deepgram voices", t):
+        return deepgram_voice_list()
+    if re.search(r'\b(?:credits?|characters|money|balance)\b', t):
+        try:
+            projects = (deepgram_api('/v1/projects') or {}).get('projects') or []
+            left = sum(float(b.get('amount') or 0) for p in projects[:1] for b in (deepgram_api(f"/v1/projects/{p['project_id']}/balances") or {}).get('balances') or []
+                       if str(b.get('units', 'usd')).lower() == 'usd')
+            if projects: return f'${left:,.2f} of Deepgram credit left. That’s about {max(0, int(left / (DEEPGRAM_RATE * 900 * 60))):,} hours of talking.'
+            why = ''
+        except SpotifyError as e: why = 'denied' if e.status in (401, 403) else ''
+        except (OSError, ValueError, TypeError, KeyError): why = 'offline'
+        try:   # Atticus.swift counts what it sends: an estimate when the balance can't be read
+            with open(os.path.join(DIR, 'deepgram-usage.json')) as f: sent = int(json.load(f).get('total') or 0)
+        except (OSError, ValueError, TypeError, AttributeError): sent = 0
+        estimate = f'By my count I’ve used about ${sent * DEEPGRAM_RATE:,.2f} of the free $200, so roughly ${max(0, 200 - sent * DEEPGRAM_RATE):,.2f} is left.'
+        if why == 'denied': return estimate + ' For the exact amount, give the key the Member role in Deepgram.'
+        if why == 'offline': return 'I couldn’t reach Deepgram. ' + estimate
+        return estimate
+    return None
 
 
 KOKORO = os.path.join(DIR, 'kokoro.json')
@@ -3636,13 +3778,15 @@ def quick_kokoro(t):
     if re.fullmatch(r"(?:use|switch to|go back to|back to|try)(?: the)? kokoro(?: voice)?", t):
         private_json(KOKORO, {**kokoro_settings(), 'on': True})
         if eleven_settings().get('on'): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+        if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
         return 'Switched to my Kokoro voice.'
     if named:
         want = (named[1] or named[2] or '').lower()
-        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'kokoro', 'a', 'another', 'other', 'different'): return None
+        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'kokoro', 'deepgram', 'a', 'another', 'other', 'different') or want in DEEPGRAM_VOICES: return None
         if want not in KOKORO_VOICES: return f'Kokoro has no voice called {want.title()}. Say “what Kokoro voices do you have” to hear the list.'
         private_json(KOKORO, {**kokoro_settings(), 'on': True, 'voice': KOKORO_VOICES[want]})
         if eleven_settings().get('on'): private_json(ELEVEN, {**eleven_settings(), 'on': False})
+        if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
         return f'Done. This is {want.title()}.'
     if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)?(?: kokoro)? voices.*|list(?: the)? kokoro voices", t):
         return 'Kokoro voices: American: Heart, Bella, Nicole, Sarah, Sky, Nova, River, Jessica, Kore, Aoede, Alloy. British: Emma, Alice, Isabella, Lily.'
@@ -3650,14 +3794,16 @@ def quick_kokoro(t):
 
 
 def quick_voice(t):
-    """Voice engine by voice: Kokoro or ElevenLabs, pick a voice, list voices, credits left, back to the Mac voice."""
+    """Voice engine by voice: Deepgram, Kokoro or ElevenLabs, pick a voice, list voices, credits left, back to the Mac voice."""
     t = re.sub(r"^(?:(?:ok|okay|hey|friday|please|can you|could you)\s+)+|(?:\s+(?:please|now|friday))+$", '', t).strip()
     t = re.sub(r'\beleven ?labs?\b|\b11 ?labs?\b|\beleven laps\b', 'elevenlabs', t)
     t = re.sub(r'\b(?:cocoro|kokora|coco ?ro|kokoro\'s|kakoro)\b', 'kokoro', t)
+    t = re.sub(r"\b(?:deep ?gram(?:'s|s)?|deep graham|deep grams?|d gram)\b", 'deepgram', t)
     if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? (?:mac|ava|normal|built in|built-in|old) voice", t):
         if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
+        if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
     else:
-        answer = quick_kokoro(t)
+        answer = quick_deepgram(t) or quick_kokoro(t)
         if answer: return answer
     if re.fullmatch(r"(?:connect|set up|setup|link|add|sign in to|log in to)(?: to)? elevenlabs(?: voice)?", t):
         subprocess.Popen(['/bin/sh', ME, '--eleven-connect'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -3682,11 +3828,12 @@ def quick_voice(t):
     if re.fullmatch(r"(?:use|switch to|go back to|back to)(?: the)? elevenlabs(?: voice)?", t):
         private_json(ELEVEN, {**eleven_settings(), 'on': True})
         if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
+        if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
         return f"Switched to ElevenLabs{', as ' + eleven_settings().get('voice', '') if eleven_settings().get('voice') else ''}."
     m = re.fullmatch(r"(?:use|switch to|try|change to)(?: the)?(?: elevenlabs)? voice(?: called| named)? (.{2,40})|(?:use|switch to|try)(?: the)? (.{2,40}?) (?:elevenlabs )?voice(?: from elevenlabs)?", t)
     if m:
         want = (m[1] or m[2] or '').strip().strip('"“”').lower()
-        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'a different', 'another', 'other'): return None
+        if want in ('mac', 'ava', 'normal', 'elevenlabs', 'deepgram', 'kokoro', 'a different', 'another', 'other'): return None
         try: voices = eleven_voices()
         except SpotifyError as e: return 'Your ElevenLabs key isn’t allowed to read your voices. In ElevenLabs, edit the key and turn on Voices: Read.' if e.status in (401, 403) else 'ElevenLabs had a problem just now. Try again in a minute.'
         except (OSError, ValueError): return 'I couldn’t reach ElevenLabs just now.'
@@ -3694,6 +3841,7 @@ def quick_voice(t):
         if not found: return f'There’s no ElevenLabs voice called {want.title()}. Say “what ElevenLabs voices do you have” to hear the list.'
         private_json(ELEVEN, {**eleven_settings(), 'on': True, 'voice_id': found[1], 'voice': found[0]})
         if kokoro_settings().get('on'): private_json(KOKORO, {**kokoro_settings(), 'on': False})
+        if deepgram_settings().get('on'): private_json(DEEPGRAM, {**deepgram_settings(), 'on': False})
         return f'Done. This is {found[0]}.'
     if re.fullmatch(r"(?:what|which)(?: are)?(?: the| your| my)? (?:elevenlabs )?voices(?: do you have| are there| can you use| are available)?|list(?: the| my)? elevenlabs voices", t):
         try: names = [n for n, _ in eleven_voices()]
@@ -9703,6 +9851,8 @@ def main():
         return print(queue(' '.join(args[1:])))
     if args[:1] == ['--eleven-connect']:   # F.R.I.D.A.Y: the ElevenLabs key, typed into a private dialog
         return eleven_connect()
+    if args[:1] == ['--deepgram-connect']:   # F.R.I.D.A.Y: the Deepgram key, typed into a private dialog
+        return deepgram_connect()
     if args[:1] == ['--morning']:   # F.R.I.D.A.Y: the morning hello, or nothing (already said today, quiet mode, not morning)
         return print(morning_line())
     if args[:1] == ['--control-state']:   # F.R.I.D.A.Y Control Room: the window's live readings

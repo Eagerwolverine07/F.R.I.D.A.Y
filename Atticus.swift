@@ -2499,7 +2499,7 @@ final class App: NSObject, WKScriptMessageHandler {
         var all = DictationData.words
         all.append("Atticus")
         // F.R.I.D.A.Y: names it kept mishearing — the wake word, its own name, Spotify and the user's playlists
-        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen", "ElevenLabs", "Kokoro"]
+        all += [Prefs.str("wakeWordName"), "Friday", "F.R.I.D.A.Y", "Spotify", "Liked Songs", "Control Room", "full screen", "ElevenLabs", "Kokoro", "Deepgram", "Pandora"]
         let lists = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/spotify-playlists.json")))) as? [[String: Any]] ?? []
         all += lists.compactMap { $0["name"] as? String }.prefix(40)
         let fixes = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/friday-fixes.json")))) as? [String: String] ?? [:]
@@ -2586,7 +2586,7 @@ final class App: NSObject, WKScriptMessageHandler {
     var studioClips: [String: VoiceClip] = [:], studioQueue: [String] = [], studioRound = 0, studioBusy = false
     var studioSteps = true, studioLast = Date.distantPast   // 8 passes, not the default 16; off once an engine rejects it
     var studioVoiceID: String?, studioVoiceAt = Date.distantPast, studioNamesShown = ""
-    var studioOn: Bool { kokoroOn || elevenOn || Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
+    var studioOn: Bool { kokoroOn || deepgramOn || elevenOn || Prefs.bool("voiceStudioOn") && !Prefs.str("voiceStudioName").isEmpty }
     // F.R.I.D.A.Y Kokoro voice: free and local. friday_kokoro.py serves 127.0.0.1:3901 (LaunchAgent com.friday.kokoro, set up by
     // "Install Kokoro Voice"); kokoro.json says {"on", "voice"}. It wins over ElevenLabs when both are on; any failure → the Mac voice.
     var kokoroCache: (Date, [String: Any])? = nil, kokoroPausedUntil = Date.distantPast
@@ -2611,6 +2611,27 @@ final class App: NSObject, WKScriptMessageHandler {
         let data = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         elevenCache = (changed, data); return data
     }
+    // F.R.I.D.A.Y Deepgram voice (Aura-2): `atticus.py --deepgram-connect` saves deepgram.json ({"on", "voice", "name"}) and
+    // deepgram.curl (the key as a curl header, 0600). Wins over ElevenLabs, loses to Kokoro; a refusal pauses it for an hour.
+    var deepgramPausedUntil = Date.distantPast, deepgramCache: (Date, [String: Any])? = nil
+    var deepgram: [String: Any] {
+        let file = elevenDir + "/deepgram.json"
+        let changed = (try? FileManager.default.attributesOfItem(atPath: file)[.modificationDate] as? Date) ?? .distantPast
+        if let c = deepgramCache, c.0 == changed { return c.1 }
+        let data = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        deepgramCache = (changed, data); return data
+    }
+    var deepgramVoice: String { let v = deepgram["voice"] as? String ?? ""; return v.range(of: #"^aura-2-[a-z]{2,12}-en$"#, options: .regularExpression) != nil ? v : "aura-2-pandora-en" }
+    var deepgramOn: Bool {
+        !kokoroOn && deepgram["on"] as? Bool == true && FileManager.default.fileExists(atPath: elevenDir + "/deepgram.curl") && Date() > deepgramPausedUntil
+    }
+    // Characters sent so far, so "how much credit is left" has an estimate even when the key may not read the balance.
+    func deepgramCount(_ n: Int) {
+        let file = elevenDir + "/deepgram-usage.json"
+        var used = (try? Data(contentsOf: URL(fileURLWithPath: file))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        used["total"] = (used["total"] as? Int ?? 0) + n
+        if let data = try? JSONSerialization.data(withJSONObject: used) { FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600]) }
+    }
     // Characters sent this month, so "how many credits are left" has an answer even when the key may not read the balance.
     func elevenCount(_ n: Int) {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM"; let month = f.string(from: Date())
@@ -2621,7 +2642,7 @@ final class App: NSObject, WKScriptMessageHandler {
         if let data = try? JSONSerialization.data(withJSONObject: used) { FileManager.default.createFile(atPath: file, contents: data, attributes: [.posixPermissions: 0o600]) }
     }
     var elevenOn: Bool {
-        !kokoroOn && eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
+        !kokoroOn && !deepgramOn && eleven["on"] as? Bool == true && (eleven["voice_id"] as? String ?? "").range(of: #"^[A-Za-z0-9]{8,40}$"#, options: .regularExpression) != nil &&
             FileManager.default.fileExists(atPath: elevenDir + "/elevenlabs.curl") && Date() > elevenPausedUntil
     }
     static func voiceChunks(_ words: String, closedOnly: Bool = false) -> [String] {
@@ -2652,6 +2673,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // The profile id for the configured name, from VoiceStudio's own list (cached a minute); nil when VoiceStudio has no such profile.
     func studioVoice(_ found: @escaping (String?) -> Void) {
         if kokoroOn { return found(kokoroVoice) }
+        if deepgramOn { return found(deepgramVoice) }
         if elevenOn { return found(eleven["voice_id"] as? String) }
         if let id = studioVoiceID, Date().timeIntervalSince(studioVoiceAt) < 60 { return found(id) }
         let wanted = Prefs.str("voiceStudioName").trimmingCharacters(in: .whitespaces).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
@@ -2677,7 +2699,7 @@ final class App: NSObject, WKScriptMessageHandler {
     // Queue one sentence; VoiceStudio makes them one at a time, in order.
     @discardableResult func studioClip(_ text: String) -> VoiceClip {
         if let clip = studioClips[text] { return clip }
-        let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count)." + (elevenOn ? "mp3" : "wav"))
+        let clip = VoiceClip(NSTemporaryDirectory() + "friday-voice-\(studioRound)-\(studioClips.count)." + (elevenOn || deepgramOn ? "mp3" : "wav"))
         studioClips[text] = clip; studioQueue.append(text)
         if !studioBusy { studioNext() }
         return clip
@@ -2704,6 +2726,31 @@ final class App: NSObject, WKScriptMessageHandler {
                     clip.ok = status == 0 && code == "200" && size > 1000; clip.done = true
                     if status == 7 { self.kokoroPausedUntil = Date().addingTimeInterval(60) }   // the helper isn't running: Mac voice for a minute
                     else if !clip.ok { NSLog("Kokoro failed (curl %d, HTTP %@)", status, code) }
+                    clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
+                    self.studioNext()
+                }
+                return
+            }
+            if self.deepgramOn {
+                guard text.count <= 1900 else {   // over Deepgram's 2,000-character limit (a long run-on line): the Mac voice says it
+                    self.studioBusy = false; self.studioQueue.removeFirst(); clip.done = true
+                    clip.waiters.forEach { $0(false) }; clip.waiters = []; return self.studioNext()
+                }
+                let body = (try? JSONSerialization.data(withJSONObject: ["text": text])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                self.studioFetch = self.studioCurl(["--max-time", "30", "-o", clip.file, "-w", "%{http_code}", "-K", self.elevenDir + "/deepgram.curl",
+                                                    "-H", "Content-Type: application/json", "--data-binary", body,
+                                                    "https://api.deepgram.com/v1/speak?model=\(id)&encoding=mp3"]) { [weak self] status, code in
+                    guard let self, round == self.studioRound else { try? FileManager.default.removeItem(atPath: clip.file); return }
+                    self.studioFetch = nil; self.studioBusy = false; self.studioQueue.removeFirst()
+                    let size = (try? FileManager.default.attributesOfItem(atPath: clip.file)[.size] as? Int) ?? 0
+                    clip.ok = status == 0 && code == "200" && size > 500; clip.done = true
+                    if clip.ok { self.deepgramCount(text.count) }
+                    if ["401", "402", "403"].contains(code) {   // bad key or no credit left: the Mac voice for an hour, without trying each sentence
+                        self.deepgramPausedUntil = Date().addingTimeInterval(3600)
+                        NSLog("Deepgram refused (HTTP %@): Mac voice for an hour", code)
+                    } else if code == "429" {   // too many at once: the Mac voice for a minute
+                        self.deepgramPausedUntil = Date().addingTimeInterval(60)
+                    } else if !clip.ok { NSLog("Deepgram failed (curl %d, HTTP %@)", status, code) }
                     clip.waiters.forEach { $0(clip.ok) }; clip.waiters = []
                     self.studioNext()
                 }
@@ -2759,7 +2806,7 @@ final class App: NSObject, WKScriptMessageHandler {
             guard Date().timeIntervalSince(studioLast) > 300 else { return }
             studioLast = Date(); _ = studioCurl(["--max-time", "2", "-X", "POST", "http://127.0.0.1:3901/warm"]) { _, _ in }; return
         }
-        guard studioOn, !elevenOn, Date().timeIntervalSince(studioLast) > 600 else { return }
+        guard studioOn, !elevenOn, !deepgramOn, Date().timeIntervalSince(studioLast) > 600 else { return }
         studioLast = Date()
         studioVoice { [weak self] id in
             guard let self, let id, !self.studioBusy else { return }
